@@ -820,6 +820,8 @@ pub struct MemoryCache {
     pub datafusion_max_size: usize,
     #[env_config(name = "ZO_MEMORY_CACHE_DATAFUSION_MEMORY_POOL", default = "")]
     pub datafusion_memory_pool: String,
+    #[env_config(name = "ZO_MEMORY_CACHE_MULTI_BUCKET", default = 512)]
+    pub multi_bucket: usize,
 }
 
 #[derive(EnvConfig)]

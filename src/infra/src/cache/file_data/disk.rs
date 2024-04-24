@@ -75,7 +75,7 @@ impl FileData {
                 .disk_cache
                 .multi_dir
                 .split(',')
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.trim().is_empty())
                 .map(|s| s.to_string())
                 .collect(),
             data: CacheStrategy::new(strategy),
@@ -510,8 +510,8 @@ mod tests {
     async fn test_multi_dir() {
         let multi_dir: Vec<String> = "dir1 , dir2 , dir3"
             .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.trim().to_string())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string())
             .collect();
 
         let trace_id = "session_123";

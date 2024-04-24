@@ -19,7 +19,11 @@ use std::{
 };
 
 use bytes::Bytes;
-use config::{metrics, RwHashMap, CONFIG};
+use config::{
+    metrics,
+    utils::hash::{gxhash, Sum32},
+    RwHashMap, CONFIG,
+};
 use once_cell::sync::Lazy;
 use tokio::sync::RwLock;
 
@@ -27,7 +31,53 @@ use super::CacheStrategy;
 use crate::storage;
 
 static FILES: Lazy<RwLock<FileData>> = Lazy::new(|| RwLock::new(FileData::new()));
-static DATA: Lazy<RwHashMap<String, Bytes>> = Lazy::new(Default::default);
+static DATA: Lazy<FileCacheData> = Lazy::new(Default::default);
+
+pub struct FileCacheData {
+    multi_bucket: usize,
+    cache: Vec<RwHashMap<String, Bytes>>,
+}
+
+impl FileCacheData {
+    pub fn new() -> FileCacheData {
+        Self {
+            multi_bucket: CONFIG.memory_cache.multi_bucket,
+            cache: vec![Default::default(); CONFIG.memory_cache.multi_bucket],
+        }
+    }
+
+    fn choose_multi_bucket(&self, file: &str) -> usize {
+        (gxhash::new().sum32(file) % self.multi_bucket as u32) as usize
+    }
+
+    fn get(
+        &self,
+        file: &str,
+    ) -> Option<dashmap::mapref::one::Ref<String, Bytes, ahash::RandomState>> {
+        let bucket = self.choose_multi_bucket(file);
+        self.cache.get(bucket).unwrap().get(file)
+    }
+
+    fn remove(&self, file: &str) -> Option<(String, Bytes)> {
+        let bucket = self.choose_multi_bucket(file);
+        self.cache.get(bucket).unwrap().remove(file)
+    }
+
+    fn insert(&self, file: String, value: Bytes) -> Option<Bytes> {
+        let bucket = self.choose_multi_bucket(file.as_str());
+        self.cache.get(bucket).unwrap().insert(file, value)
+    }
+
+    fn shrink_to_fit(&self) {
+        self.cache.iter().map(|c| c.shrink_to_fit()).collect()
+    }
+}
+
+impl Default for FileCacheData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct FileData {
     max_size: usize,
