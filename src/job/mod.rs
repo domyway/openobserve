@@ -22,10 +22,7 @@ use regex::Regex;
 use crate::{
     common::{
         infra::config::SYSLOG_ENABLED,
-        meta::{
-            organization::{Organization, DEFAULT_ORG},
-            user::UserRequest,
-        },
+        meta::{organization::DEFAULT_ORG, user::UserRequest},
     },
     service::{compact::stats::update_stats_from_file_list, db, usage, users},
 };
@@ -59,11 +56,7 @@ pub async fn init() -> Result<(), anyhow::Error> {
                 "Please set root user email-id & password using ZO_ROOT_USER_EMAIL & ZO_ROOT_USER_PASSWORD environment variables. This can also indicate an invalid email ID. Email ID must comply with ([a-z0-9_+]([a-z0-9_+.-]*[a-z0-9_+])?)@([a-z0-9]+([\\-\\.]{{1}}[a-z0-9]+)*\\.[a-z]{{2,6}})"
             );
         }
-        let _ = crate::service::organization::create_org(&Organization {
-            identifier: DEFAULT_ORG.to_owned(),
-            name: DEFAULT_ORG.to_owned(),
-        })
-        .await;
+        let _ = crate::service::organization::check_and_create_org(DEFAULT_ORG).await;
         let _ = users::create_root_user(
             DEFAULT_ORG,
             UserRequest {

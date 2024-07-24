@@ -39,7 +39,10 @@ use {
 use crate::{
     common::{
         infra::{cluster::get_cached_online_querier_nodes, config::ENRICHMENT_TABLES},
-        meta::{organization::Organization, stream::StreamSchema},
+        meta::{
+            organization::{Organization, CUSTOM, DEFAULT_ORG},
+            stream::StreamSchema,
+        },
     },
     service::{db, enrichment::StreamTable},
 };
@@ -534,6 +537,11 @@ pub async fn cache() -> Result<(), anyhow::Error> {
             let _ = super::organization::set(&Organization {
                 identifier: org_id.to_owned(),
                 name: org_id.to_owned(),
+                org_type: if org_id.eq(DEFAULT_ORG) {
+                    DEFAULT_ORG.to_owned()
+                } else {
+                    CUSTOM.to_owned()
+                },
             })
             .await;
         }

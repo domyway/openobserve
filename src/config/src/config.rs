@@ -761,6 +761,12 @@ pub struct Common {
     pub result_cache_discard_duration: i64,
     #[env_config(name = "ZO_SWAGGER_ENABLED", default = true)]
     pub swagger_enabled: bool,
+    #[env_config(
+        name = "ZO_CREATE_ORG_THROUGH_INGESTION",
+        default = false,
+        help = "If true, new org can be automatically created through ingestion for root user"
+    )]
+    pub create_org_through_ingestion: bool,
 }
 
 #[derive(EnvConfig)]
