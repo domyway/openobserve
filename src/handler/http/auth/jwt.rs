@@ -23,8 +23,8 @@ use jsonwebtoken::TokenData;
 use o2_enterprise::enterprise::openfga::{
     authorizer::{
         authz::{
-            get_org_creation_tuples, get_user_creation_tuples, get_user_org_tuple,
-            get_user_role_creation_tuple, get_user_role_deletion_tuple, update_tuples,
+            get_user_creation_tuples, get_user_org_tuple, get_user_role_creation_tuple,
+            get_user_role_deletion_tuple, update_tuples,
         },
         roles::{
             check_and_get_crole_tuple_for_new_user, get_roles_for_user,
@@ -370,16 +370,7 @@ async fn map_group_to_custom_role(user_email: &str, name: &str, custom_roles: Ve
         log::info!("group_to_custom_role: User does not exist in the database");
 
         if O2_CONFIG.openfga.enabled {
-            get_org_creation_tuples(
-                &O2_CONFIG.dex.default_org,
-                &mut tuples,
-                OFGA_MODELS
-                    .iter()
-                    .map(|(_, fga_entity)| fga_entity.key)
-                    .collect(),
-                NON_OWNING_ORG.to_vec(),
-            )
-            .await;
+            let _ = organization::check_and_create_org(&O2_CONFIG.dex.default_org).await;
             tuples.push(get_user_org_tuple(&O2_CONFIG.dex.default_org, user_email));
             tuples.push(get_user_org_tuple(user_email, user_email));
             let start = std::time::Instant::now();
