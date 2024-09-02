@@ -245,6 +245,17 @@ pub enum JwtError {
     #[error("Token can't be verified")]
     ValidationFailed(),
 }
+#[derive(ThisError, Debug)]
+pub enum BufferWriteError {
+    #[error("not an ingester")]
+    NotAIngester,
+    #[error("Quota exceeded for this organization [{0}]")]
+    ForbiddenOrganization(String),
+    #[error("{0}")]
+    ServiceUnavalilable(String),
+    #[error("{0}")]
+    InvalidData(String),
+}
 
 #[cfg(test)]
 mod tests {

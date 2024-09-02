@@ -48,7 +48,7 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TraceMetricsItem {
     pub organization: String,
     pub traces_stream_name: String,

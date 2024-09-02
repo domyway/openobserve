@@ -402,7 +402,11 @@ async fn init_common_grpc_server(
     let logs_svc = LogsServiceServer::new(LogsServer)
         .send_compressed(CompressionEncoding::Gzip)
         .accept_compressed(CompressionEncoding::Gzip);
-    let tracer = TraceServer::default();
+    let tracer = TraceServer {
+        flusher: std::sync::Arc::new(
+            openobserve::service::traces::flusher::WriteBufferFlusher::new(),
+        ),
+    };
     let trace_svc = TraceServiceServer::new(tracer)
         .send_compressed(CompressionEncoding::Gzip)
         .accept_compressed(CompressionEncoding::Gzip)

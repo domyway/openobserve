@@ -13,97 +13,71 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, io::Error, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use actix_web::{http, HttpResponse};
-use bytes::BytesMut;
 use chrono::{Duration, Utc};
 use config::{
     cluster::LOCAL_NODE,
     get_config,
     meta::{
         stream::{PartitionTimeLevel, StreamPartition, StreamType},
-        usage::{RequestStats, UsageType},
+        usage::UsageType,
     },
     metrics,
     utils::{flatten, json, schema_ext::SchemaExt},
     DISTINCT_FIELDS,
 };
-use infra::schema::{unwrap_partition_time_level, SchemaCache};
+use infra::{
+    errors::BufferWriteError,
+    schema::{unwrap_partition_time_level, SchemaCache},
+};
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_proto::tonic::{
-    collector::trace::v1::{
-        ExportTracePartialSuccess, ExportTraceServiceRequest, ExportTraceServiceResponse,
-    },
+    collector::trace::v1::{ExportTracePartialSuccess, ExportTraceServiceRequest},
     trace::v1::{status::StatusCode, Status},
 };
-use prost::Message;
 
 use crate::{
     common::meta::{
         alerts::alert::Alert,
-        http::HttpResponse as MetaHttpResponse,
         stream::{SchemaRecords, StreamParams},
         traces::{Event, Span, SpanLink, SpanLinkContext, SpanRefType},
     },
+    job::metrics::TraceMetricsItem,
     service::{
-        db, format_stream_name,
-        ingestion::{evaluate_trigger, grpc::get_val, write_file, TriggerAlertData},
+        db, format_stream_name, ingestion,
+        ingestion::{evaluate_trigger, grpc::get_val, TriggerAlertData},
         metadata::{
             distinct_values::DvItem, trace_list_index::TraceListItem, write, MetadataItem,
             MetadataType,
         },
         schema::{check_for_schema, stream_schema_exists},
+        traces::{
+            flusher::{ExportRequestInnerEntry, WalTraceResponse},
+            PARENT_SPAN_ID, PARENT_TRACE_ID, REF_TYPE, SERVICE, SERVICE_NAME,
+        },
         usage::report_request_usage_stats,
     },
 };
 
-pub mod flusher;
-pub mod otlp_http;
-pub mod wal;
-
-const PARENT_SPAN_ID: &str = "reference.parent_span_id";
-const PARENT_TRACE_ID: &str = "reference.parent_trace_id";
-const REF_TYPE: &str = "reference.ref_type";
-const SERVICE_NAME: &str = "service.name";
-const SERVICE: &str = "service";
-const BLOCK_FIELDS: [&str; 4] = ["_timestamp", "duration", "start_time", "end_time"];
-
-pub async fn handle_trace_request(
+pub async fn wal_handle_trace_request(
     org_id: &str,
     request: ExportTraceServiceRequest,
-    is_grpc: bool,
     in_stream_name: Option<&str>,
-) -> Result<HttpResponse, Error> {
-    let start = std::time::Instant::now();
-    let started_at = Utc::now().timestamp_micros();
-
+) -> Result<ExportRequestInnerEntry, BufferWriteError> {
     if !LOCAL_NODE.is_ingester() {
-        return Ok(
-            HttpResponse::InternalServerError().json(MetaHttpResponse::error(
-                http::StatusCode::INTERNAL_SERVER_ERROR.into(),
-                "not an ingester".to_string(),
-            )),
-        );
+        return Err(BufferWriteError::NotAIngester);
     }
 
     if !db::file_list::BLOCKED_ORGS.is_empty()
         && db::file_list::BLOCKED_ORGS.contains(&org_id.to_string())
     {
-        return Ok(HttpResponse::Forbidden().json(MetaHttpResponse::error(
-            http::StatusCode::FORBIDDEN.into(),
-            format!("Quota exceeded for this organization [{}]", org_id),
-        )));
+        return Err(BufferWriteError::ForbiddenOrganization(org_id.to_string()));
     }
 
     // check memtable
     if let Err(e) = ingester::check_memtable_size() {
-        return Ok(
-            HttpResponse::ServiceUnavailable().json(MetaHttpResponse::error(
-                http::StatusCode::SERVICE_UNAVAILABLE.into(),
-                e.to_string(),
-            )),
-        );
+        return Err(BufferWriteError::ForbiddenOrganization(e.to_string()));
     }
 
     let cfg = get_config();
@@ -181,7 +155,7 @@ pub async fn handle_trace_request(
                 let mut span_att_map: HashMap<String, json::Value> = HashMap::new();
                 for span_att in span.attributes {
                     let mut key = span_att.key;
-                    if BLOCK_FIELDS.contains(&key.as_str()) {
+                    if crate::service::traces::BLOCK_FIELDS.contains(&key.as_str()) {
                         key = format!("attr_{}", key);
                     }
                     span_att_map.insert(key, get_val(&span_att.value.as_ref()));
@@ -259,9 +233,8 @@ pub async fn handle_trace_request(
                 let mut value: json::Value = json::to_value(local_val).unwrap();
 
                 // JSON Flattening
-                value = flatten::flatten(value).map_err(|e| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-                })?;
+                value = flatten::flatten(value)
+                    .map_err(|e| BufferWriteError::InvalidData(e.to_string()))?;
 
                 // Start row based transform
                 if !local_trans.is_empty() {
@@ -273,9 +246,7 @@ pub async fn handle_trace_request(
                         &traces_stream_name,
                         &mut runtime,
                     )
-                    .map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-                    })?;
+                    .map_err(|e| BufferWriteError::InvalidData(e.to_string()))?;
                 }
                 // End row based transform
 
@@ -313,18 +284,71 @@ pub async fn handle_trace_request(
         }
     }
 
-    // if no data, fast return
-    if json_data.is_empty() {
-        return format_response(partial_success);
+    let (data_buf, distinct_values, trace_index_values, trigger) =
+        make_data_buf(org_id, &traces_stream_name, json_data).await;
+
+    Ok(ExportRequestInnerEntry {
+        org_id: org_id.to_string(),
+        is_grpc: false,
+        stream_name: traces_stream_name,
+        data_buf,
+        distinct_values,
+        trace_index_values,
+        trigger,
+        span_metrics,
+        partial_success,
+    })
+}
+
+fn get_span_status(status: Option<Status>) -> String {
+    match status {
+        Some(v) => match v.code() {
+            StatusCode::Ok => "OK".to_string(),
+            StatusCode::Error => "ERROR".to_string(),
+            StatusCode::Unset => "UNSET".to_string(),
+        },
+        None => "".to_string(),
+    }
+}
+#[allow(clippy::too_many_arguments)]
+pub async fn wal_write_traces(
+    org_id: &str,
+    is_grpc: bool,
+    stream_name: &str,
+    data_buf: HashMap<String, SchemaRecords>,
+    distinct_values: Vec<MetadataItem>,
+    trace_index_values: Vec<MetadataItem>,
+    trigger: Option<TriggerAlertData>,
+    span_metrics: Vec<TraceMetricsItem>,
+    mut partial_success: ExportTracePartialSuccess,
+) -> Result<crate::service::traces::flusher::WalTraceResponse, BufferWriteError> {
+    let started_at = Utc::now().timestamp_micros();
+    let start = std::time::Instant::now();
+    // write data to wal
+    let writer = ingester::get_writer(org_id, &StreamType::Traces.to_string(), stream_name).await;
+    let mut req_stats =
+        crate::service::ingestion::write_wal_file(&writer, stream_name, data_buf).await;
+    if let Err(e) = writer.sync().await {
+        log::error!("ingestion error while syncing writer: {}", e);
     }
 
-    let mut req_stats = match write_traces(org_id, &traces_stream_name, json_data).await {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("Error while writing traces: {}", e);
-            return format_response(partial_success);
+    // send distinct_values
+    if !distinct_values.is_empty() {
+        if let Err(e) = write(org_id, MetadataType::DistinctValues, distinct_values).await {
+            log::error!("Error while writing distinct values: {}", e);
         }
-    };
+    }
+
+    // send trace metadata
+    if !trace_index_values.is_empty() {
+        if let Err(e) = write(org_id, MetadataType::TraceListIndexer, trace_index_values).await {
+            log::error!("Error while writing trace_index values: {}", e);
+        }
+    }
+
+    // only one trigger per request
+    evaluate_trigger(trigger).await;
+
     let time = start.elapsed().as_secs_f64();
     req_stats.response_time = time;
 
@@ -334,6 +358,7 @@ pub async fn handle_trace_request(
         "/api/otlp/v1/traces"
     };
 
+    let cfg = get_config();
     // record span metrics
     for m in span_metrics {
         if cfg.common.traces_span_metrics_enabled {
@@ -360,7 +385,7 @@ pub async fn handle_trace_request(
             ep,
             "200",
             org_id,
-            &traces_stream_name,
+            stream_name,
             StreamType::Traces.to_string().as_str(),
         ])
         .observe(time);
@@ -369,7 +394,7 @@ pub async fn handle_trace_request(
             ep,
             "200",
             org_id,
-            &traces_stream_name,
+            stream_name,
             StreamType::Traces.to_string().as_str(),
         ])
         .inc();
@@ -378,7 +403,7 @@ pub async fn handle_trace_request(
     report_request_usage_stats(
         req_stats,
         org_id,
-        &traces_stream_name,
+        stream_name,
         StreamType::Traces,
         UsageType::Traces,
         0,
@@ -386,22 +411,7 @@ pub async fn handle_trace_request(
     )
     .await;
 
-    format_response(partial_success)
-}
-
-fn get_span_status(status: Option<Status>) -> String {
-    match status {
-        Some(v) => match v.code() {
-            StatusCode::Ok => "OK".to_string(),
-            StatusCode::Error => "ERROR".to_string(),
-            StatusCode::Unset => "UNSET".to_string(),
-        },
-        None => "".to_string(),
-    }
-}
-
-fn format_response(mut partial_success: ExportTracePartialSuccess) -> Result<HttpResponse, Error> {
-    let res = ExportTraceServiceResponse {
+    Ok(WalTraceResponse {
         partial_success: if partial_success.rejected_spans > 0 {
             partial_success.error_message =
                 "Some spans were rejected due to exceeding the allowed retention period"
@@ -410,20 +420,34 @@ fn format_response(mut partial_success: ExportTracePartialSuccess) -> Result<Htt
         } else {
             None
         },
-    };
-    let mut out = BytesMut::with_capacity(res.encoded_len());
-    res.encode(&mut out).expect("Out of memory");
-    Ok(HttpResponse::Ok()
-        .status(http::StatusCode::OK)
-        .content_type("application/x-protobuf")
-        .body(out))
+    })
 }
 
-async fn write_traces(
+pub async fn memtable_write_traces(
+    org_id: &str,
+    stream_name: &str,
+    data_buf: HashMap<String, SchemaRecords>,
+) -> Result<crate::service::traces::flusher::WalTraceResponse, BufferWriteError> {
+    let writer = ingester::get_writer(org_id, &StreamType::Traces.to_string(), stream_name).await;
+    let _ = crate::service::ingestion::write_memtable(&writer, stream_name, data_buf).await;
+    if let Err(e) = writer.sync().await {
+        log::error!("ingestion error while syncing writer: {}", e);
+    };
+
+    Ok(WalTraceResponse {
+        partial_success: None,
+    })
+}
+pub async fn make_data_buf(
     org_id: &str,
     stream_name: &str,
     json_data: Vec<(i64, json::Map<String, json::Value>)>,
-) -> Result<RequestStats, Error> {
+) -> (
+    HashMap<String, SchemaRecords>,
+    Vec<MetadataItem>,
+    Vec<MetadataItem>,
+    Option<TriggerAlertData>,
+) {
     let cfg = get_config();
     // get schema and stream settings
     let mut traces_schema_map: HashMap<String, SchemaCache> = HashMap::new();
@@ -546,7 +570,7 @@ async fn write_traces(
         // End check for alert trigger
 
         // get hour key
-        let hour_key = super::ingestion::get_wal_time_key(
+        let hour_key = ingestion::get_wal_time_key(
             timestamp,
             &partition_keys,
             partition_time_level,
@@ -566,29 +590,5 @@ async fn write_traces(
         hour_buf.records_size += record_size;
     }
 
-    // write data to wal
-    let writer = ingester::get_writer(org_id, &StreamType::Traces.to_string(), stream_name).await;
-    let req_stats = write_file(&writer, stream_name, data_buf).await;
-    if let Err(e) = writer.sync().await {
-        log::error!("ingestion error while syncing writer: {}", e);
-    }
-
-    // send distinct_values
-    if !distinct_values.is_empty() {
-        if let Err(e) = write(org_id, MetadataType::DistinctValues, distinct_values).await {
-            log::error!("Error while writing distinct values: {}", e);
-        }
-    }
-
-    // send trace metadata
-    if !trace_index_values.is_empty() {
-        if let Err(e) = write(org_id, MetadataType::TraceListIndexer, trace_index_values).await {
-            log::error!("Error while writing trace_index values: {}", e);
-        }
-    }
-
-    // only one trigger per request
-    evaluate_trigger(trigger).await;
-
-    Ok(req_stats)
+    (data_buf, distinct_values, trace_index_values, trigger)
 }

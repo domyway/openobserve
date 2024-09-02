@@ -5380,6 +5380,7 @@ dependencies = [
  "config",
  "console-subscriber",
  "cron",
+ "crossbeam-channel",
  "csv",
  "dashmap",
  "datafusion",

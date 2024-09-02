@@ -428,6 +428,74 @@ pub async fn write_file(
     req_stats
 }
 
+pub async fn write_wal_file(
+    writer: &Arc<ingester::Writer>,
+    stream_name: &str,
+    buf: HashMap<String, SchemaRecords>,
+) -> RequestStats {
+    let mut req_stats = RequestStats::default();
+    for (hour_key, entry) in buf {
+        if entry.records.is_empty() {
+            continue;
+        }
+        let entry_records = entry.records.len();
+        if let Err(e) = writer
+            .write_wal(
+                entry.schema,
+                ingester::Entry {
+                    stream: Arc::from(stream_name),
+                    schema_key: Arc::from(entry.schema_key.as_str()),
+                    partition_key: Arc::from(hour_key.as_str()),
+                    data: entry.records,
+                    data_size: entry.records_size,
+                },
+                false,
+            )
+            .await
+        {
+            log::error!("ingestion write file error: {}", e);
+        }
+
+        req_stats.size += entry.records_size as f64 / SIZE_IN_MB;
+        req_stats.records += entry_records as i64;
+    }
+    req_stats
+}
+
+pub async fn write_memtable(
+    writer: &Arc<ingester::Writer>,
+    stream_name: &str,
+    buf: HashMap<String, SchemaRecords>,
+) -> RequestStats {
+    let mut req_stats = RequestStats::default();
+    for (hour_key, entry) in buf {
+        if entry.records.is_empty() {
+            continue;
+        }
+        let entry_records = entry.records.len();
+        if let Err(e) = writer
+            .write_memtable(
+                entry.schema,
+                ingester::Entry {
+                    stream: Arc::from(stream_name),
+                    schema_key: Arc::from(entry.schema_key.as_str()),
+                    partition_key: Arc::from(hour_key.as_str()),
+                    data: entry.records,
+                    data_size: entry.records_size,
+                },
+                false,
+            )
+            .await
+        {
+            log::error!("ingestion write file error: {}", e);
+        }
+
+        req_stats.size += entry.records_size as f64 / SIZE_IN_MB;
+        req_stats.records += entry_records as i64;
+    }
+    req_stats
+}
+
 pub fn check_ingestion_allowed(org_id: &str, stream_name: Option<&str>) -> Result<()> {
     if !LOCAL_NODE.is_ingester() {
         return Err(anyhow!("not an ingester"));

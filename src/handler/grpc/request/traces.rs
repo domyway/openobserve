@@ -18,10 +18,10 @@ use opentelemetry_proto::tonic::collector::trace::v1::{
 };
 use tonic::{codegen::*, Response, Status};
 
-use crate::service::traces::handle_trace_request;
-
 #[derive(Default)]
-pub struct TraceServer {}
+pub struct TraceServer {
+    pub flusher: Arc<crate::service::traces::flusher::WriteBufferFlusher>,
+}
 
 #[async_trait]
 impl TraceService for TraceServer {
@@ -39,33 +39,45 @@ impl TraceService for TraceServer {
             return Err(Status::invalid_argument(msg));
         }
 
-        let in_req = request.into_inner();
-        let org_id = metadata.get(&cfg.grpc.org_header_key);
-        if org_id.is_none() {
-            return Err(Status::invalid_argument(msg));
-        }
+        // let in_req = request.into_inner();
+        // let org_id = metadata.get(&cfg.grpc.org_header_key);
+        // if org_id.is_none() {
+        //     return Err(Status::invalid_argument(msg));
+        // }
 
-        let stream_name = metadata.get(&cfg.grpc.stream_header_key);
-        let mut in_stream_name: Option<&str> = None;
-        if let Some(stream_name) = stream_name {
-            in_stream_name = Some(stream_name.to_str().unwrap());
-        };
-
-        let resp = handle_trace_request(
-            org_id.unwrap().to_str().unwrap(),
-            in_req,
-            true,
-            in_stream_name,
-        )
-        .await;
-        if resp.is_ok() {
-            return Ok(Response::new(ExportTraceServiceResponse {
-                partial_success: None,
-            }));
-        } else {
-            let err = resp.err().unwrap().to_string();
-            log::error!("handle_trace_request err {}", err);
-            Err(Status::internal(err))
+        match self.flusher.write(request).await {
+            Ok(resp) => match resp {
+                crate::service::traces::flusher::BufferedWriteResult::Success(_) => {
+                    log::info!("flusher::BufferedWriteResult::Success");
+                    Ok(Response::new(ExportTraceServiceResponse {
+                        partial_success: None,
+                    }))
+                }
+                crate::service::traces::flusher::BufferedWriteResult::Error(e) => {
+                    log::info!("flusher::BufferedWriteResult::Error");
+                    Err(Status::internal(e.to_string()))
+                }
+            },
+            Err(e) => {
+                log::info!("flusher write error {}", e);
+                Err(Status::internal(e.to_string()))
+            }
         }
+        // let resp = handle_trace_request(
+        //     org_id.unwrap().to_str().unwrap(),
+        //     in_req,
+        //     true,
+        //     in_stream_name,
+        // )
+        // .await;
+        // if resp.is_ok() {
+        //     return Ok(Response::new(ExportTraceServiceResponse {
+        //         partial_success: None,
+        //     }));
+        // } else {
+        //     let err = resp.err().unwrap().to_string();
+        //     log::error!("handle_trace_request err {}", err);
+        //     Err(Status::internal(err))
+        // }
     }
 }
