@@ -39,22 +39,15 @@ impl TraceService for TraceServer {
             return Err(Status::invalid_argument(msg));
         }
 
-        // let in_req = request.into_inner();
-        // let org_id = metadata.get(&cfg.grpc.org_header_key);
-        // if org_id.is_none() {
-        //     return Err(Status::invalid_argument(msg));
-        // }
-
         match self.flusher.write(request).await {
             Ok(resp) => match resp {
                 crate::service::traces::flusher::BufferedWriteResult::Success(_) => {
-                    log::info!("flusher::BufferedWriteResult::Success");
                     Ok(Response::new(ExportTraceServiceResponse {
                         partial_success: None,
                     }))
                 }
                 crate::service::traces::flusher::BufferedWriteResult::Error(e) => {
-                    log::info!("flusher::BufferedWriteResult::Error");
+                    log::info!("flusher::BufferedWriteResult::Error {}", e.to_string());
                     Err(Status::internal(e.to_string()))
                 }
             },
@@ -63,21 +56,5 @@ impl TraceService for TraceServer {
                 Err(Status::internal(e.to_string()))
             }
         }
-        // let resp = handle_trace_request(
-        //     org_id.unwrap().to_str().unwrap(),
-        //     in_req,
-        //     true,
-        //     in_stream_name,
-        // )
-        // .await;
-        // if resp.is_ok() {
-        //     return Ok(Response::new(ExportTraceServiceResponse {
-        //         partial_success: None,
-        //     }));
-        // } else {
-        //     let err = resp.err().unwrap().to_string();
-        //     log::error!("handle_trace_request err {}", err);
-        //     Err(Status::internal(err))
-        // }
     }
 }
