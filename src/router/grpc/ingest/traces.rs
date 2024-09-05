@@ -82,7 +82,7 @@ impl TraceService for TraceServer {
             }
             Err(e) => {
                 let time = start.elapsed().as_millis() as usize;
-                log::error!("[Router:TRACES] export status: {e}, took: {time} ms");
+                log::error!("[Router:TRACES] [{trace_id}] export status: {e}, took: {time} ms");
                 Err(e)
             }
         }
