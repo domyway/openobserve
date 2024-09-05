@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use config::{ider, meta::stream::StreamType};
+use config::meta::stream::StreamType;
 use crossbeam_channel::{Receiver as CrossbeamReceiver, Sender as CrossbeamSender};
 use hashbrown::HashMap;
 use infra::errors::BufferWriteError;
@@ -128,7 +128,7 @@ impl WriteBufferFlusher {
         request: tonic::Request<ExportTraceServiceRequest>,
     ) -> Result<BufferedWriteResult, Error> {
         let (response_tx, response_rx) = oneshot::channel();
-
+        let trace_id = get_request_trace_id(&request);
         match self
             .buffer_tx
             .send(BufferedWrite {
@@ -139,6 +139,7 @@ impl WriteBufferFlusher {
         {
             Ok(_) => {
                 let resp = response_rx.await.expect("wal op buffer thread is dead");
+                log::error!("{trace_id} flusher response_rx resp end");
                 match resp {
                     BufferedWriteResult::Success(_) => Ok(resp),
                     BufferedWriteResult::Error(e) => {
@@ -148,7 +149,7 @@ impl WriteBufferFlusher {
                 }
             }
             Err(e) => {
-                log::error!("flusher inside write error {e}");
+                log::error!("{trace_id} flusher inside write error {e}");
                 Err(Error::new(ErrorKind::Other, e))
             }
         }
@@ -175,6 +176,7 @@ pub fn run_trace_io_flush(
 
         let mut res: NotifyResult = HashMap::new();
         // write the ops to the segment files, or return on first error
+        let mut trace_id_list = "".to_string();
         for (session_id, request) in request {
             let mut sr = WalTraceServiceResponse {
                 response: Ok(Default::default()),
@@ -192,18 +194,8 @@ pub fn run_trace_io_flush(
                 trace_id: "".to_string(),
             };
 
-            let t = config::ider::uuid()
-                .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-                .unwrap();
-            let in_trace_id = request
-                .metadata()
-                .get("in_trace_id")
-                .unwrap_or(&t)
-                .to_str()
-                .unwrap_or("")
-                .to_string();
-            log::info!("[{in_trace_id}] run_trace_io_flush start");
-            sr.trace_id = in_trace_id.to_string();
+            log::info!("[{session_id}] run_trace_io_flush start");
+            sr.trace_id = session_id.to_string();
             sr.response = match SYNC_RT.block_on(async {
                 let cfg = config::get_config();
                 let metadata = request.metadata().clone();
@@ -249,14 +241,16 @@ pub fn run_trace_io_flush(
                 Ok(res) => Ok(res),
                 Err(e) => Err(e),
             };
-            log::info!("[{in_trace_id}] run_trace_io_flush end");
+            log::info!("[{session_id}] run_trace_io_flush end");
             // Httpresponse may be partial_success, it must handle every response result
-            res.insert(session_id, sr);
+            res.insert(session_id.to_string(), sr);
+            trace_id_list = format!("{trace_id_list}|{}", session_id);
         }
 
         io_flush_notify_tx
             .send(Ok(res))
             .expect("buffer flusher is dead");
+        log::info!("[{trace_id_list}] io_flush_notify_tx end");
     }
 }
 
@@ -274,7 +268,7 @@ pub async fn run_trace_op_buffer(
         // select on either buffering an op, ticking the flush interval, or shutting down
         select! {
             Some(buffered_write) = buffer_rx.recv() => {
-                let session_id = ider::uuid();
+                let session_id = get_request_trace_id(&buffered_write.request);
                 let _ = ops.insert(session_id.clone(), buffered_write.request);
                 notifies.push((session_id, buffered_write.response_tx));
             },
@@ -305,12 +299,13 @@ pub async fn run_trace_op_buffer(
                                             BufferedWriteResult::Success(ets.clone())
                                         }
                                         Err(e) => {
-                                            log::error!("io_flush_notify_rx resp error : {e}");
+                                            log::error!("{sid} io_flush_notify_rx resp error : {e}");
                                             BufferedWriteResult::Error(e)
                                         }
                                     };
-
+                                    log::info!("[{sid}] BufferedWriteResult send start");
                                     let _ = response_tx.send(bwr);
+                                    log::info!("[{sid}] BufferedWriteResult send end");
                                 }
                                 None => { warn!("[{sid}] ingest not found") }
                             }
@@ -323,6 +318,7 @@ pub async fn run_trace_op_buffer(
                 // reset the buffers
                 ops = RequestOps::new();
                 notifies = Vec::new();
+                log::info!("reset the buffers");
             },
             _ = shutdown.changed() => {
                 // shutdown has been requested
@@ -331,4 +327,17 @@ pub async fn run_trace_op_buffer(
             }
         }
     }
+}
+
+fn get_request_trace_id(request: &tonic::Request<ExportTraceServiceRequest>) -> String {
+    let t = config::ider::uuid()
+        .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+        .unwrap();
+    request
+        .metadata()
+        .get("in_trace_id")
+        .unwrap_or(&t)
+        .to_str()
+        .unwrap_or("")
+        .to_string()
 }
