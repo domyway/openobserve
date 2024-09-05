@@ -139,7 +139,7 @@ impl WriteBufferFlusher {
         {
             Ok(_) => {
                 let resp = response_rx.await.expect("wal op buffer thread is dead");
-                log::error!("{trace_id} flusher response_rx resp end");
+                log::info!("{trace_id} flusher response_rx resp end");
                 match resp {
                     BufferedWriteResult::Success(_) => Ok(resp),
                     BufferedWriteResult::Error(e) => {
