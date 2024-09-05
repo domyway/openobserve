@@ -67,6 +67,7 @@ pub struct ExportRequestInnerEntry {
 pub struct WalTraceServiceResponse {
     response: Result<WalTraceResponse, BufferWriteError>,
     request: ExportRequestInnerEntry,
+    trace_id: String,
 }
 type NotifyResult = HashMap<String, WalTraceServiceResponse>;
 type IoFlushNotifyResult = Result<NotifyResult, BufferWriteError>;
@@ -188,8 +189,21 @@ pub fn run_trace_io_flush(
                     span_metrics: vec![],
                     partial_success: Default::default(),
                 },
+                trace_id: "".to_string(),
             };
 
+            let t = config::ider::uuid()
+                .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+                .unwrap();
+            let in_trace_id = request
+                .metadata()
+                .get("in_trace_id")
+                .unwrap_or(&t)
+                .to_str()
+                .unwrap_or("")
+                .to_string();
+            log::info!("[{in_trace_id}] run_trace_io_flush start");
+            sr.trace_id = in_trace_id.to_string();
             sr.response = match SYNC_RT.block_on(async {
                 let cfg = config::get_config();
                 let metadata = request.metadata().clone();
@@ -235,7 +249,7 @@ pub fn run_trace_io_flush(
                 Ok(res) => Ok(res),
                 Err(e) => Err(e),
             };
-
+            log::info!("[{in_trace_id}] run_trace_io_flush end");
             // Httpresponse may be partial_success, it must handle every response result
             res.insert(session_id, sr);
         }
@@ -276,8 +290,11 @@ pub async fn run_trace_op_buffer(
                 match io_flush_notify_rx.recv().expect("wal io thread is dead") {
                     Ok(mut resp) => {
                         for (_, walresp) in &resp {
+                            let in_trace_id = walresp.trace_id.as_str();
+                            log::info!("[{in_trace_id}] run_trace_op_buffer start");
                             let writer = ingester::get_writer(walresp.request.org_id.as_str(), &StreamType::Traces.to_string(), walresp.request.stream_name.as_str()).await;
                             let _ = crate::service::ingestion::write_memtable(&writer, walresp.request.stream_name.as_str(), walresp.request.data_buf.clone()).await;
+                            log::info!("[{in_trace_id}] run_trace_op_buffer start");
                         }
                         // notify the watchers of the write response
                         for (sid, response_tx) in notifies {
