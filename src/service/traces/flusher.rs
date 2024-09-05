@@ -5,6 +5,7 @@ use std::{
 
 use config::meta::stream::StreamType;
 use crossbeam_channel::{Receiver as CrossbeamReceiver, Sender as CrossbeamSender};
+use futures::future::join_all;
 use hashbrown::HashMap;
 use infra::errors::BufferWriteError;
 use log::{info, warn};
@@ -16,7 +17,7 @@ use parking_lot::Mutex;
 use tokio::{
     runtime::Runtime,
     select,
-    sync::{mpsc, oneshot, watch},
+    sync::{mpsc, oneshot, oneshot::Sender, watch},
     time::MissedTickBehavior,
 };
 
@@ -247,6 +248,10 @@ pub fn run_trace_io_flush(
             trace_id_list = format!("{trace_id_list}|{}", session_id);
         }
 
+        log::info!(
+            "[{trace_id_list}] io_flush_notify_tx start, io_flush_notify_tx len: {}",
+            io_flush_notify_tx.len()
+        );
         io_flush_notify_tx
             .send(Ok(res))
             .expect("buffer flusher is dead");
@@ -288,9 +293,10 @@ pub async fn run_trace_op_buffer(
                             log::info!("[{in_trace_id}] run_trace_op_buffer start");
                             let writer = ingester::get_writer(walresp.request.org_id.as_str(), &StreamType::Traces.to_string(), walresp.request.stream_name.as_str()).await;
                             let _ = crate::service::ingestion::write_memtable(&writer, walresp.request.stream_name.as_str(), walresp.request.data_buf.clone()).await;
-                            log::info!("[{in_trace_id}] run_trace_op_buffer start");
+                            log::info!("[{in_trace_id}] run_trace_op_buffer end");
                         }
                         // notify the watchers of the write response
+                        let mut result = Vec::new();
                         for (sid, response_tx) in notifies {
                             match resp.remove(&sid) {
                                 Some(r) => {
@@ -303,14 +309,13 @@ pub async fn run_trace_op_buffer(
                                             BufferedWriteResult::Error(e)
                                         }
                                     };
-                                    log::info!("[{sid}] BufferedWriteResult send start");
-                                    let _ = response_tx.send(bwr);
-                                    log::info!("[{sid}] BufferedWriteResult send end");
+                                    result.push((sid.clone(), response_tx, bwr));
                                 }
                                 None => { warn!("[{sid}] ingest not found") }
                             }
-
                         }
+
+                        process_notifies(result).await;
                     },
                     Err(_) => unimplemented!(),
                 };
@@ -340,4 +345,23 @@ fn get_request_trace_id(request: &tonic::Request<ExportTraceServiceRequest>) -> 
         .to_str()
         .unwrap_or("")
         .to_string()
+}
+
+async fn process_notifies(
+    notifies: Vec<(String, Sender<BufferedWriteResult>, BufferedWriteResult)>,
+) {
+    // Create a collection of futures
+    let futures = notifies.into_iter().map(|(sid, response_tx, res)| {
+        // Spawn each task using `tokio::spawn`
+        tokio::spawn(async move {
+            info!("[{sid}] BufferedWriteResult send start");
+            if let Err(e) = response_tx.send(res) {
+                log::error!("Failed to send BufferedWriteResult: {:?}", e);
+            }
+            info!("[{sid}] BufferedWriteResult send end");
+        })
+    });
+
+    // Wait for all the tasks to finish
+    join_all(futures).await;
 }

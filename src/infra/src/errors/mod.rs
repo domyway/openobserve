@@ -257,6 +257,24 @@ pub enum BufferWriteError {
     InvalidData(String),
 }
 
+impl BufferWriteError {
+    // Helper function to convert &BufferWriteError to BufferWriteError
+    pub fn to_owned(&self) -> BufferWriteError {
+        match self {
+            BufferWriteError::NotAIngester => BufferWriteError::NotAIngester,
+            BufferWriteError::ForbiddenOrganization(org) => {
+                BufferWriteError::ForbiddenOrganization(org.clone())
+            }
+            BufferWriteError::ServiceUnavalilable(message) => {
+                BufferWriteError::ServiceUnavalilable(message.clone())
+            }
+            BufferWriteError::InvalidData(message) => {
+                BufferWriteError::InvalidData(message.clone())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
