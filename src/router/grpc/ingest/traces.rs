@@ -63,6 +63,7 @@ impl TraceService for TraceServer {
             req.metadata_mut().insert("authorization", token.clone());
             Ok(req)
         });
+        log::info!("[Router:TRACES] [{trace_id}] export start");
         match client
             .send_compressed(CompressionEncoding::Gzip)
             .accept_compressed(CompressionEncoding::Gzip)
