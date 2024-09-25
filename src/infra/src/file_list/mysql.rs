@@ -287,8 +287,7 @@ SELECT stream, date, file, deleted, min_ts, max_ts, records, original_size, comp
             sqlx::query_as::<_, super::FileRecord>(
                 r#"
 SELECT stream, date, file, deleted, min_ts, max_ts, records, original_size, compressed_size, flattened
-    FROM file_list 
-    FORCE INDEX (file_list_stream_ts_idx) 
+    FROM file_list
     WHERE stream = ? AND flattened = ? LIMIT 1000;
                 "#,
             )
@@ -301,8 +300,7 @@ SELECT stream, date, file, deleted, min_ts, max_ts, records, original_size, comp
             sqlx::query_as::<_, super::FileRecord>(
                 r#"
 SELECT stream, date, file, deleted, min_ts, max_ts, records, original_size, compressed_size, flattened
-    FROM file_list 
-    FORCE INDEX (file_list_stream_ts_idx) 
+    FROM file_list
     WHERE stream = ? AND max_ts >= ? AND min_ts <= ?;
                 "#,
             )
