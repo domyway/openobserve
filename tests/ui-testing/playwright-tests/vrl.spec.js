@@ -163,8 +163,8 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
-    await page
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
+      await page
       .locator(
         '[data-test="field-list-item-logs-e2e_automate-kubernetes_annotations_kubectl_kubernetes_io_default_container"] [data-test="dashboard-add-y-data"]'
       )
@@ -220,7 +220,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
     await page
       .locator(
         '[data-test="field-list-item-logs-e2e_automate-kubernetes_annotations_kubectl_kubernetes_io_default_container"] [data-test="dashboard-add-b-data"]'
@@ -241,6 +241,14 @@ test.describe(" VRL UI testcases", () => {
       .click();
 
     //await page.locator('[data-test="dashboard-vrl-function-editor"]').getByLabel('Editor content;Press Alt+F1').fill('.percenteage1 ,err = .kubernetes_annotations_kubectl_kubernetes_io_default_container * .kubernetes_container_hash / 100\ .percenteage2 ,err = .kubernetes_annotations_kubectl_kubernetes_io_default_container / .kubernetes_container_hash * 100 \n');
+
+    await page
+    .locator('[data-test="dashboard-vrl-function-editor"]')
+    .getByLabel("Editor content;Press Alt+F1")
+    .fill(
+      ".percenteage1 ,err = .kubernetes_annotations_kubectl_kubernetes_io_default_container * .kubernetes_container_hash / 100  \n .percenteage2 ,err = .kubernetes_annotations_kubectl_kubernetes_io_default_container / .kubernetes_container_hash * 100 \n"
+    );
+
 
     await page
       .locator('[data-test="dashboard-vrl-function-editor"]')
@@ -367,7 +375,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
     await page
       .locator(
         '[data-test="field-list-item-logs-e2e_automate-kubernetes_annotations_kubectl_kubernetes_io_default_container"] [data-test="dashboard-add-b-data"]'
@@ -443,7 +451,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
 
     await page
       .locator(
@@ -549,7 +557,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
     await page
       .locator(
         '[data-test="field-list-item-logs-e2e_automate-kubernetes_annotations_kubernetes_io_psp"] [data-test="dashboard-add-y-data"]'
@@ -623,7 +631,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
     await page
       .locator(
         '[data-test="field-list-item-logs-e2e_automate-kubernetes_annotations_kubectl_kubernetes_io_default_container"] [data-test="dashboard-add-b-data"]'
@@ -705,7 +713,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
     await page
       .locator(
         '[data-test="field-list-item-logs-e2e_automate-kubernetes_annotations_kubectl_kubernetes_io_default_container"] [data-test="dashboard-add-b-data"]'
@@ -757,7 +765,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
 
     await page
       .locator(
@@ -825,7 +833,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
 
     await page
       .locator(
@@ -895,7 +903,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
     await page
       .locator(
         '[data-test="field-list-item-logs-e2e_automate-kubernetes_annotations_kubernetes_io_psp"] [data-test="dashboard-add-y-data"]'
@@ -964,7 +972,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
     await page
       .locator(
         '[data-test="field-list-item-logs-e2e_automate-kubernetes_annotations_kubernetes_io_psp"] [data-test="dashboard-add-y-data"]'
@@ -1060,7 +1068,7 @@ test.describe(" VRL UI testcases", () => {
       .filter({ hasText: "Streamarrow_drop_down" })
       .locator("i")
       .click();
-    await page.getByText("e2e_automate").click();
+      await page.getByRole('option', { name: 'e2e_automate' }).click();
 
     // Set up Y-axis data
     await page
