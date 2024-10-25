@@ -22,7 +22,7 @@ use config::{
     cluster::LOCAL_NODE,
     get_config,
     meta::{
-        stream::{PartitionTimeLevel, StreamPartition, StreamType},
+        stream::{PartitionTimeLevel, StreamParams, StreamPartition, StreamType},
         usage::{RequestStats, UsageType},
     },
     metrics,
@@ -44,7 +44,7 @@ use crate::{
     common::meta::{
         alerts::alert::Alert,
         http::HttpResponse as MetaHttpResponse,
-        stream::{SchemaRecords, StreamParams},
+        stream::SchemaRecords,
         traces::{Event, Span, SpanLink, SpanLinkContext, SpanRefType},
     },
     service::{
@@ -68,6 +68,8 @@ const BLOCK_FIELDS: [&str; 4] = ["_timestamp", "duration", "start_time", "end_ti
 // ref https://opentelemetry.io/docs/specs/otel/trace/api/#retrieving-the-traceid-and-spanid
 const SPAN_ID_BYTES_COUNT: usize = 8;
 const TRACE_ID_BYTES_COUNT: usize = 16;
+const ATTR_STATUS_CODE: &str = "status_code";
+const ATTR_STATUS_MESSAGE: &str = "status_message";
 
 pub enum RequestType {
     Grpc,
@@ -83,13 +85,20 @@ pub async fn traces_proto(
     let request = match ExportTraceServiceRequest::decode(body) {
         Ok(v) => v,
         Err(e) => {
+            log::error!("[TRACE] Invalid proto: {}", e);
             return Ok(HttpResponse::BadRequest().json(MetaHttpResponse::error(
                 http::StatusCode::BAD_REQUEST.into(),
                 format!("Invalid proto: {}", e),
             )));
         }
     };
-    handle_trace_request(org_id, request, RequestType::HttpProtobuf, in_stream_name).await
+    match handle_trace_request(org_id, request, RequestType::HttpProtobuf, in_stream_name).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            log::error!("[TRACE] Error while handling grpc trace request: {}", e);
+            Err(e)
+        }
+    }
 }
 
 pub async fn traces_json(
@@ -100,13 +109,20 @@ pub async fn traces_json(
     let request = match serde_json::from_slice::<ExportTraceServiceRequest>(body.as_ref()) {
         Ok(req) => req,
         Err(e) => {
+            log::error!("[TRACE] Invalid json: {}", e);
             return Ok(HttpResponse::BadRequest().json(MetaHttpResponse::error(
                 http::StatusCode::BAD_REQUEST.into(),
                 format!("Invalid json: {}", e),
             )));
         }
     };
-    handle_trace_request(org_id, request, RequestType::HttpJson, in_stream_name).await
+    match handle_trace_request(org_id, request, RequestType::HttpJson, in_stream_name).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            log::error!("[TRACE] Error while handling http trace request: {}", e);
+            Err(e)
+        }
+    }
 }
 
 pub async fn handle_trace_request(
@@ -138,6 +154,10 @@ pub async fn handle_trace_request(
 
     // check memtable
     if let Err(e) = ingester::check_memtable_size() {
+        log::error!(
+            "[TRACE] ingestion error while checking memtable size: {}",
+            e
+        );
         return Ok(
             HttpResponse::ServiceUnavailable().json(MetaHttpResponse::error(
                 http::StatusCode::SERVICE_UNAVAILABLE.into(),
@@ -193,14 +213,14 @@ pub async fn handle_trace_request(
             let spans = inst_span.spans;
             for span in spans {
                 if span.span_id.len() != SPAN_ID_BYTES_COUNT {
-                    log::info!("skipping span with invalid span id");
+                    log::error!("[TRACE] skipping span with invalid span id");
                     partial_success.rejected_spans += 1;
                     continue;
                 }
                 let span_id: String =
                     SpanId::from_bytes(span.span_id.try_into().unwrap()).to_string();
                 if span.trace_id.len() != TRACE_ID_BYTES_COUNT {
-                    log::info!("skipping span with invalid trace id");
+                    log::error!("[TRACE] skipping span with invalid trace id");
                     partial_success.rejected_spans += 1;
                     continue;
                 }
@@ -228,6 +248,15 @@ pub async fn handle_trace_request(
                     span_att_map.insert(key, get_val(&span_att.value.as_ref()));
                 }
 
+                // special addition for https://github.com/openobserve/openobserve/issues/4851
+                // we set the status (error/non-error) properly, but skip the message
+                // however, that can be useful when debugging with traces, so we
+                // extract that as an attribute here.
+                if let Some(ref status) = span.status {
+                    span_att_map.insert(ATTR_STATUS_CODE.into(), status.code.into());
+                    span_att_map.insert(ATTR_STATUS_MESSAGE.into(), status.message.clone().into());
+                }
+
                 let mut events = vec![];
                 let mut event_att_map: HashMap<String, json::Value> = HashMap::new();
                 for event in span.events {
@@ -248,13 +277,13 @@ pub async fn handle_trace_request(
                         link_att_map.insert(link_att.key, get_val(&link_att.value.as_ref()));
                     }
                     if link.span_id.len() != SPAN_ID_BYTES_COUNT {
-                        log::info!("skipping link with invalid span id");
+                        log::error!("[TRACE] skipping link with invalid span id");
                         continue;
                     }
                     let span_id: String =
                         SpanId::from_bytes(link.span_id.try_into().unwrap()).to_string();
                     if link.trace_id.len() != TRACE_ID_BYTES_COUNT {
-                        log::info!("skipping link with invalid trace id");
+                        log::error!("[TRACE] skipping link with invalid trace id");
                         continue;
                     }
                     let trace_id: String =
@@ -273,6 +302,9 @@ pub async fn handle_trace_request(
 
                 let timestamp = (start_time / 1000) as i64;
                 if timestamp < min_ts {
+                    log::error!(
+                        "[TRACE] skipping span with timestamp older than allowed retention period"
+                    );
                     partial_success.rejected_spans += 1;
                     continue;
                 }
@@ -341,6 +373,7 @@ pub async fn handle_trace_request(
                         v
                     }
                     _ => {
+                        log::error!("[TRACE] stream functions did not return valid json object");
                         return Ok(HttpResponse::InternalServerError().json(
                             MetaHttpResponse::error(
                                 http::StatusCode::INTERNAL_SERVER_ERROR.into(),
@@ -362,6 +395,7 @@ pub async fn handle_trace_request(
 
     // if no data, fast return
     if json_data.is_empty() {
+        log::error!("[TRACE] no data to write");
         return format_response(partial_success, req_type);
     }
 
