@@ -212,6 +212,13 @@ pub async fn handle_trace_request(
         for inst_span in inst_resources {
             let spans = inst_span.spans;
             for span in spans {
+                let trace_id: String =
+                    TraceId::from_bytes(span.trace_id.clone().try_into().unwrap()).to_string();
+                if !trace_ids.contains(&trace_id) {
+                    trace_ids.insert(trace_id.clone());
+                    log::info!("[TRACE] found new trace_id: {}", trace_id);
+                }
+
                 if span.span_id.len() != SPAN_ID_BYTES_COUNT {
                     log::error!("[TRACE] skipping span with invalid span id");
                     partial_success.rejected_spans += 1;
@@ -224,12 +231,7 @@ pub async fn handle_trace_request(
                     partial_success.rejected_spans += 1;
                     continue;
                 }
-                let trace_id: String =
-                    TraceId::from_bytes(span.trace_id.try_into().unwrap()).to_string();
-                if !trace_ids.contains(&trace_id) {
-                    trace_ids.insert(trace_id.clone());
-                    log::info!("[TRACE] found new trace_id: {}", trace_id);
-                }
+
                 let mut span_ref = HashMap::new();
                 if !span.parent_span_id.is_empty()
                     && span.parent_span_id.len() == SPAN_ID_BYTES_COUNT

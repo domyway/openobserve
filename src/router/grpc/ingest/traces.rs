@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
+use opentelemetry::trace::TraceId;
 use config::meta::cluster::get_internal_grpc_token;
 use opentelemetry_proto::tonic::collector::trace::v1::{
     trace_service_client::TraceServiceClient, trace_service_server::TraceService,
@@ -35,7 +37,23 @@ impl TraceService for TraceServer {
         let start = std::time::Instant::now();
         let cfg = config::get_config();
         let (metadata, extensions, message) = request.into_parts();
-
+        // TODO: need remove for debug
+        let mut trace_ids = HashSet::new();
+        let res_spans = &message.resource_spans;
+        for res_span in res_spans {
+            let inst_resources = &res_span.scope_spans;
+            for inst_span in inst_resources {
+                let spans = &inst_span.spans;
+                for span in spans {
+                    let trace_id: String =
+                        TraceId::from_bytes(span.trace_id.clone().try_into().unwrap()).to_string();
+                    if !trace_ids.contains(&trace_id) {
+                        trace_ids.insert(trace_id.clone());
+                        log::info!("[ROUTER] found new trace_id: {}", trace_id);
+                    }
+                }
+            }
+        }
         // basic validation
         if !metadata.contains_key(&cfg.grpc.org_header_key) {
             return Err(Status::invalid_argument(format!(
