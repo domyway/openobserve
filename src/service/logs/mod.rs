@@ -333,6 +333,7 @@ async fn write_logs(
     let cfg = get_config();
     let log_ingest_errors = ingestion_log_enabled().await;
     // get schema and stream settings
+    let _log_start_2_1_1 = std::time::Instant::now();
     let mut stream_schema_map: HashMap<String, SchemaCache> = HashMap::new();
     let stream_schema = stream_schema_exists(
         org_id,
@@ -341,7 +342,12 @@ async fn write_logs(
         &mut stream_schema_map,
     )
     .await;
+    let _log_start_2_1_1_duration = _log_start_2_1_1.elapsed();
+    if _log_start_2_1_1_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_1_1_duration: {_log_start_2_1_1_duration:?}");
+    }
 
+    let _log_start_2_1_2 = std::time::Instant::now();
     let schema = match stream_schema_map.get(stream_name) {
         Some(schema) => schema.schema().clone(),
         None => {
@@ -359,8 +365,13 @@ async fn write_logs(
         partition_time_level =
             unwrap_partition_time_level(stream_settings.partition_time_level, StreamType::Logs);
     }
+    let _log_start_2_1_2_duration = _log_start_2_1_2.elapsed();
+    if _log_start_2_1_2_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_1_2_duration: {_log_start_2_1_2_duration:?}");
+    }
 
     // Start get stream alerts
+    let _log_start_2_1_3 = std::time::Instant::now();
     let mut stream_alerts_map: HashMap<String, Vec<Alert>> = HashMap::new();
     crate::service::ingestion::get_stream_alerts(
         &[StreamParams {
@@ -378,7 +389,13 @@ async fn write_logs(
     let mut evaluated_alerts = HashSet::new();
     // End get stream alert
 
+    let _log_start_2_1_3_duration = _log_start_2_1_3.elapsed();
+    if _log_start_2_1_3_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_1_3_duration: {_log_start_2_1_3_duration:?}");
+    }
+
     // start check for schema
+    let _log_start_2_1_4 = std::time::Instant::now();
     let min_timestamp = json_data.iter().map(|(ts, _)| ts).min().unwrap();
     let (schema_evolution, infer_schema) = check_for_schema(
         org_id,
@@ -390,8 +407,13 @@ async fn write_logs(
         is_derived, // is_derived is true if the stream is derived
     )
     .await?;
+    let _log_start_2_1_4_duration = _log_start_2_1_4.elapsed();
+    if _log_start_2_1_4_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_1_4_duration: {_log_start_2_1_4_duration:?}");
+    }
 
     // get schema
+    let _log_start_2_1_5 = std::time::Instant::now();
     let latest_schema = stream_schema_map
         .get(stream_name)
         .unwrap()
@@ -407,6 +429,10 @@ async fn write_logs(
         Some(schema) => Arc::new(schema.cloned_from(&latest_schema)),
         None => Arc::new(latest_schema),
     };
+    let _log_start_2_1_5_duration = _log_start_2_1_5.elapsed();
+    if _log_start_2_1_5_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_1_5_duration: {_log_start_2_1_5_duration:?}");
+    }
 
     let mut distinct_values = Vec::with_capacity(16);
 
