@@ -20,6 +20,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use arrow_schema::{DataType, Field, Schema};
@@ -114,6 +115,7 @@ impl Metadata for TraceListIndex {
             hour_buf.records_size += data_size;
         }
 
+        let _start_12_1 = Instant::now();
         let writer =
             ingester::get_writer(0, org_id, StreamType::Metadata.as_str(), STREAM_NAME).await;
         _ = ingestion::write_file(
@@ -123,6 +125,10 @@ impl Metadata for TraceListIndex {
             !get_config().common.wal_fsync_disabled,
         )
         .await;
+        let _start_12_1_duration = _start_12_1.elapsed();
+        if _start_12_1_duration.as_millis() > 200 {
+            log::warn!("_start_12_1_duration: {_start_12_1_duration:?}");
+        }
 
         #[cfg(feature = "enterprise")]
         {

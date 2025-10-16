@@ -202,6 +202,7 @@ pub async fn handle_otlp_request(
     let mut json_data_by_stream = HashMap::new();
     let mut span_metrics = Vec::with_capacity(res_spans.len());
     let mut partial_success = ExportTracePartialSuccess::default();
+    let _start_1_1 = Instant::now();
     for res_span in res_spans {
         let mut service_att_map: HashMap<String, json::Value> = HashMap::new();
         if let Some(resource) = res_span.resource {
@@ -419,6 +420,10 @@ pub async fn handle_otlp_request(
                 }
             }
         }
+    }
+    let _start_1_1_duration = _start_1_1.elapsed();
+    if _start_1_1_duration.as_millis() > 200 {
+        log::warn!("_start_1_1_duration: {_start_1_1_duration:?}");
     }
 
     // batch process records through pipeline

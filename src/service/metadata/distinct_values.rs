@@ -173,11 +173,19 @@ impl Metadata for DistinctValues {
                 *count += 1;
             }
         }
+        let _start_11_1 = std::time::Instant::now();
         for (item, count) in group_items {
             self.channel
                 .send(DvEvent::new(org_id, item, count))
                 .await
                 .map_err(|v| Error::Message(v.to_string()))?;
+        }
+        let _start_11_1_duration = _start_11_1.elapsed();
+        if _start_11_1_duration.as_millis() > 200 {
+            log::warn!(
+                "_start_11_1_duration: {_start_11_1_duration:?}, channel cap: {}",
+                self.channel.capacity()
+            );
         }
         Ok(())
     }
