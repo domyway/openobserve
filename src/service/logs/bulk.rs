@@ -98,6 +98,7 @@ pub async fn ingest(
     let mut size_by_stream = HashMap::new();
     let mut next_line_is_data = false;
     let reader = BufReader::new(body.as_ref());
+    let _log_start_1 = std::time::Instant::now();
     for line in reader.lines() {
         let line = line?;
         if line.is_empty() {
@@ -362,7 +363,10 @@ pub async fn ingest(
         }
         tokio::task::coop::consume_budget().await;
     }
-
+    let _log_start_1_duration = _log_start_1.elapsed();
+    if _log_start_1_duration.as_millis() > 100 {
+        log::warn!("_log_start_1_duration: {_log_start_1_duration:?}");
+    }
     // batch process records through pipeline
     for (stream_name, exec_pl_option) in stream_executable_pipelines {
         if let Some(exec_pl) = exec_pl_option {

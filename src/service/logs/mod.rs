@@ -214,6 +214,7 @@ async fn write_logs_by_stream(
     byte_size_by_stream: HashMap<String, usize>,
     derived_streams: HashSet<String>,
 ) -> Result<()> {
+    let _log_start_2 = std::time::Instant::now();
     for (stream_name, (json_data, fn_num)) in json_data_by_stream {
         // check if we are allowed to ingest
         if db::compact::retention::is_deleting_stream(org_id, StreamType::Logs, &stream_name, None)
@@ -252,6 +253,7 @@ async fn write_logs_by_stream(
         }
 
         // write json data by stream
+        let _log_start_2_1 = std::time::Instant::now();
         let mut req_stats = write_logs(
             thread_id,
             org_id,
@@ -261,6 +263,10 @@ async fn write_logs_by_stream(
             derived_streams.contains(&stream_name),
         )
         .await?;
+        let _log_start_2_1_duration = _log_start_2_1.elapsed();
+        if _log_start_2_1_duration.as_millis() > 200 {
+            log::warn!("_log_start_2_1_duration: {_log_start_2_1_duration:?}");
+        }
 
         let time_took = time_stats.1.elapsed().as_secs_f64();
         req_stats.response_time = time_took;
@@ -308,6 +314,10 @@ async fn write_logs_by_stream(
             )
             .await;
         }
+    }
+    let _log_start_2_duration = _log_start_2.elapsed();
+    if _log_start_2_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_duration: {_log_start_2_duration:?}");
     }
     Ok(())
 }
@@ -401,7 +411,7 @@ async fn write_logs(
     let mut distinct_values = Vec::with_capacity(16);
 
     let mut write_buf: HashMap<String, SchemaRecords> = HashMap::new();
-
+    let _log_start_2_2 = std::time::Instant::now();
     for (timestamp, mut record_val) in json_data {
         let doc_id = record_val
             .get("_id")
@@ -564,10 +574,21 @@ async fn write_logs(
             }
         }
     }
+    let _log_start_2_2_duration = _log_start_2_2.elapsed();
+    if _log_start_2_2_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_2_duration: {_log_start_2_2_duration:?}");
+    }
 
+    let _log_start_2_3 = std::time::Instant::now();
     // write data to wal
     let writer =
         ingester::get_writer(thread_id, org_id, StreamType::Logs.as_str(), stream_name).await;
+    let _log_start_2_3_duration = _log_start_2_3.elapsed();
+    if _log_start_2_3_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_3_duration: {_log_start_2_3_duration:?}");
+    }
+
+    let _log_start_2_4 = std::time::Instant::now();
     let req_stats = write_file(
         &writer,
         stream_name,
@@ -576,6 +597,12 @@ async fn write_logs(
     )
     .await?;
 
+    let _log_start_2_4_duration = _log_start_2_4.elapsed();
+    if _log_start_2_4_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_4_duration: {_log_start_2_4_duration:?}");
+    }
+
+    let _log_start_2_5 = std::time::Instant::now();
     // send distinct_values
     if !distinct_values.is_empty()
         && !stream_name.starts_with(DISTINCT_STREAM_PREFIX)
@@ -583,6 +610,10 @@ async fn write_logs(
         && let Err(e) = write(org_id, MetadataType::DistinctValues, distinct_values).await
     {
         log::error!("Error while writing distinct values: {e}");
+    }
+    let _log_start_2_5_duration = _log_start_2_5.elapsed();
+    if _log_start_2_5_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_5_duration: {_log_start_2_5_duration:?}");
     }
 
     // only one trigger per request
