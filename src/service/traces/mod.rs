@@ -86,6 +86,7 @@ pub async fn otlp_proto(
     body: web::Bytes,
     in_stream_name: Option<&str>,
 ) -> Result<HttpResponse, Error> {
+    let _start_0 = Instant::now();
     let request = match ExportTraceServiceRequest::decode(body) {
         Ok(v) => v,
         Err(e) => {
@@ -96,6 +97,10 @@ pub async fn otlp_proto(
             )));
         }
     };
+    let _start_0_duration = _start_0.elapsed();
+    if _start_0_duration.as_millis() > 100 {
+        log::warn!("_start_0_duration: {_start_0_duration:?}");
+    }
     match handle_otlp_request(
         org_id,
         request,

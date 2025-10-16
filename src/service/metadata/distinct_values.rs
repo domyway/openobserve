@@ -175,10 +175,9 @@ impl Metadata for DistinctValues {
         }
         let _start_11_1 = std::time::Instant::now();
         for (item, count) in group_items {
-            self.channel
-                .send(DvEvent::new(org_id, item, count))
-                .await
-                .map_err(|v| Error::Message(v.to_string()))?;
+            if let Err(e) = self.channel.try_send(DvEvent::new(org_id, item, count)) {
+                log::warn!("_start_11_1_0_duration err: {e}");
+            }
         }
         let _start_11_1_duration = _start_11_1.elapsed();
         if _start_11_1_duration.as_millis() > 200 {
