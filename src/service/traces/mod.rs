@@ -176,7 +176,7 @@ pub async fn handle_otlp_request(
 
     let start = std::time::Instant::now();
     let started_at = Utc::now().timestamp_micros();
-
+    let _start_1 = Instant::now();
     let cfg = get_config();
     let traces_stream_name = match in_stream_name {
         Some(name) => format_stream_name(name),
@@ -402,13 +402,13 @@ pub async fn handle_otlp_request(
                                 "[TRACES:OTLP] stream did not receive a valid json object, trace_id: {trace_id}"
                             );
                             return Ok(HttpResponse::InternalServerError()
-                            .append_header((ERROR_HEADER, format!("[trace_id: {trace_id}] stream did not receive a valid json object")))
-                            .json(
-                                MetaHttpResponse::error(
-                                    http::StatusCode::INTERNAL_SERVER_ERROR,
-                                    "stream did not receive a valid json object",
-                                ),
-                            ));
+                                .append_header((ERROR_HEADER, format!("[trace_id: {trace_id}] stream did not receive a valid json object")))
+                                .json(
+                                    MetaHttpResponse::error(
+                                        http::StatusCode::INTERNAL_SERVER_ERROR,
+                                        "stream did not receive a valid json object",
+                                    ),
+                                ));
                         }
                     };
 
@@ -525,6 +525,11 @@ pub async fn handle_otlp_request(
     // if no data, fast return
     if json_data_by_stream.is_empty() {
         return format_response(partial_success, req_type);
+    }
+
+    let _start_1_duration = _start_1.elapsed();
+    if _start_1_duration.as_millis() > 200 {
+        log::warn!("_start_1_duration: {_start_1_duration:?}");
     }
 
     if let Err(e) = write_traces_by_stream(org_id, (started_at, &start), json_data_by_stream).await
@@ -762,13 +767,18 @@ async fn write_traces_by_stream(
             )
             .await;
         }
-
+        let _start_2 = Instant::now();
         let mut req_stats = match write_traces(org_id, &traces_stream_name, json_data).await {
             Ok(v) => v,
             Err(e) => {
                 return Err(e);
             }
         };
+        let _start_2_duration = _start_2.elapsed();
+        if _start_2_duration.as_millis() > 200 {
+            log::warn!("_start_2_duration: {_start_2_duration:?}");
+        }
+
         let time = time_stats.1.elapsed().as_secs_f64();
         req_stats.response_time = time;
         // metric + data usage
@@ -794,6 +804,7 @@ async fn write_traces(
     let cfg = get_config();
     // get schema and stream settings
     let mut traces_schema_map: HashMap<String, SchemaCache> = HashMap::new();
+    let _start_3 = Instant::now();
     let stream_schema = stream_schema_exists(
         org_id,
         stream_name,
@@ -801,11 +812,20 @@ async fn write_traces(
         &mut traces_schema_map,
     )
     .await;
-
+    let _start_3_duration = _start_3.elapsed();
+    if _start_3_duration.as_millis() > 200 {
+        log::warn!("_start_3_duration: {_start_3_duration:?}");
+    }
+    let _start_4 = Instant::now();
     let stream_settings = infra::schema::get_settings(org_id, stream_name, StreamType::Traces)
         .await
         .unwrap_or_default();
+    let _start_4_duration = _start_4.elapsed();
+    if _start_4_duration.as_millis() > 200 {
+        log::warn!("_start_4_duration: {_start_4_duration:?}");
+    }
 
+    let _start_5 = Instant::now();
     let mut partition_keys: Vec<StreamPartition> = vec![];
     let mut partition_time_level =
         PartitionTimeLevel::from(cfg.limit.traces_file_retention.as_str());
@@ -820,7 +840,12 @@ async fn write_traces(
         partition_time_level =
             unwrap_partition_time_level(partition_det.partition_time_level, StreamType::Traces);
     }
+    let _start_5_duration = _start_5.elapsed();
+    if _start_5_duration.as_millis() > 200 {
+        log::warn!("_start_5_duration: {_start_5_duration:?}");
+    }
 
+    let _start_6 = Instant::now();
     // Start get stream alerts
     let mut stream_alerts_map: HashMap<String, Vec<Alert>> = HashMap::new();
     crate::service::ingestion::get_stream_alerts(
@@ -832,6 +857,7 @@ async fn write_traces(
         &mut stream_alerts_map,
     )
     .await;
+
     let cur_stream_alerts = stream_alerts_map.get(&format!(
         "{}/{}/{}",
         org_id,
@@ -842,7 +868,11 @@ async fn write_traces(
         Vec::with_capacity(cur_stream_alerts.map_or(0, |v| v.len()));
     let mut evaluated_alerts = HashSet::new();
     // End get stream alert
-
+    let _start_6_duration = _start_6.elapsed();
+    if _start_6_duration.as_millis() > 200 {
+        log::warn!("_start_6_duration: {_start_6_duration:?}");
+    }
+    let _start_7 = Instant::now();
     // Start check for schema
     let min_timestamp = json_data.iter().map(|(ts, _)| ts).min().unwrap();
     let _ = check_for_schema(
@@ -868,7 +898,11 @@ async fn write_traces(
     let mut data_buf: HashMap<String, SchemaRecords> = HashMap::new();
     let mut distinct_values = Vec::with_capacity(16);
     let mut trace_index_values = Vec::with_capacity(json_data.len());
-
+    let _start_7_duration = _start_7.elapsed();
+    if _start_7_duration.as_millis() > 200 {
+        log::warn!("_start_7_duration: {_start_7_duration:?}");
+    }
+    let _start_8 = Instant::now();
     // Start write data
     for (timestamp, record_val) in json_data {
         // get service_name
@@ -959,9 +993,18 @@ async fn write_traces(
         hour_buf.records.push(Arc::new(record_val));
         hour_buf.records_size += record_size;
     }
-
+    let _start_8_duration = _start_8.elapsed();
+    if _start_8_duration.as_millis() > 200 {
+        log::warn!("_start_8_duration: {_start_8_duration:?}");
+    }
+    let _start_9 = Instant::now();
     // write data to wal
     let writer = ingester::get_writer(0, org_id, StreamType::Traces.as_str(), stream_name).await;
+    let _start_9_duration = _start_9.elapsed();
+    if _start_9_duration.as_millis() > 200 {
+        log::warn!("_start_9_duration: {_start_9_duration:?}");
+    }
+    let _start_10 = Instant::now();
     let req_stats = write_file(
         &writer,
         stream_name,
@@ -973,7 +1016,12 @@ async fn write_traces(
         log::error!("Error while writing traces: {e}");
         std::io::Error::other(e.to_string())
     })?;
+    let _start_10_duration = _start_10.elapsed();
+    if _start_10_duration.as_millis() > 200 {
+        log::warn!("_start_10_duration: {_start_10_duration:?}");
+    }
 
+    let _start_11 = Instant::now();
     // send distinct_values
     if !distinct_values.is_empty()
         && !stream_name.starts_with(DISTINCT_STREAM_PREFIX)
@@ -982,17 +1030,28 @@ async fn write_traces(
     {
         log::error!("Error while writing distinct values: {e}");
     }
-
+    let _start_11_duration = _start_11.elapsed();
+    if _start_11_duration.as_millis() > 200 {
+        log::warn!("_start_11_duration: {_start_11_duration:?}");
+    }
+    let _start_12 = Instant::now();
     // send trace metadata
     if !trace_index_values.is_empty()
         && let Err(e) = write(org_id, MetadataType::TraceListIndexer, trace_index_values).await
     {
         log::error!("Error while writing trace_index values: {e}");
     }
-
+    let _start_12_duration = _start_12.elapsed();
+    if _start_12_duration.as_millis() > 200 {
+        log::warn!("_start_12_duration: {_start_12_duration:?}");
+    }
+    let _start_13 = Instant::now();
     // only one trigger per request
     evaluate_trigger(triggers).await;
-
+    let _start_13_duration = _start_13.elapsed();
+    if _start_13_duration.as_millis() > 200 {
+        log::warn!("_start_13_duration: {_start_13_duration:?}");
+    }
     Ok(req_stats)
 }
 
