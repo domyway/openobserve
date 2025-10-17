@@ -1046,7 +1046,8 @@ async fn write_traces(
     }
     let _start_12 = Instant::now();
     // send trace metadata
-    if !trace_index_values.is_empty()
+    if get_config().common.traces_list_index_enabled
+        && !trace_index_values.is_empty()
         && let Err(e) = write(org_id, MetadataType::TraceListIndexer, trace_index_values).await
     {
         log::error!("Error while writing trace_index values: {e}");

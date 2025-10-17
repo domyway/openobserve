@@ -42,7 +42,6 @@ use infra::{
 };
 
 use super::{
-    db::organization::get_org_setting,
     ingestion::{TriggerAlertData, evaluate_trigger, write_file},
     metadata::{
         MetadataItem, MetadataType,
@@ -693,11 +692,7 @@ pub fn refactor_map(
 }
 
 async fn ingestion_log_enabled() -> bool {
-    // the logging will be enabled through meta only, so hardcoded
-    match get_org_setting("_meta").await {
-        Ok(org_settings) => org_settings.toggle_ingestion_logs,
-        Err(_) => false,
-    }
+    false
 }
 
 fn log_failed_record<T: std::fmt::Debug>(enabled: bool, record: &T, error: &str) {

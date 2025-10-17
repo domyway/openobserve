@@ -1140,6 +1140,12 @@ pub struct Common {
         help = "Enable to use large partition for index. This will apply for all streams"
     )]
     pub align_partitions_for_index: bool,
+    #[env_config(
+        name = "ZO_TRACES_LIST_INDEX_ENABLED",
+        default = false,
+        help = "enable trace list index for traces"
+    )]
+    pub traces_list_index_enabled: bool,
 }
 
 #[derive(EnvConfig, Default)]
