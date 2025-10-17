@@ -330,8 +330,13 @@ async fn write_logs(
     json_data: Vec<(i64, Map<String, Value>)>,
     is_derived: bool,
 ) -> Result<RequestStats> {
+    let _log_start_2_1_0 = std::time::Instant::now();
     let cfg = get_config();
     let log_ingest_errors = ingestion_log_enabled().await;
+    let _log_start_2_1_0_duration = _log_start_2_1_0.elapsed();
+    if _log_start_2_1_0_duration.as_millis() > 200 {
+        log::warn!("_log_start_2_1_0_duration: {_log_start_2_1_0_duration:?}");
+    }
     // get schema and stream settings
     let _log_start_2_1_1 = std::time::Instant::now();
     let mut stream_schema_map: HashMap<String, SchemaCache> = HashMap::new();
