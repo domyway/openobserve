@@ -163,10 +163,10 @@ impl Writer {
 
         let start = std::time::Instant::now();
         self.f.write_all(buf).context(WriteDataSnafu)?;
-        let wal_lock_time = start.elapsed().as_millis() as f64;
+        let wal_write_time = start.elapsed().as_millis() as f64;
         config::metrics::INGEST_WAL_LOCK_TIME
             .with_label_values(&["default"])
-            .observe(wal_lock_time);
+            .observe(wal_write_time);
 
         self.bytes_written += bytes_written;
         self.uncompressed_bytes_written += uncompressed_len;
