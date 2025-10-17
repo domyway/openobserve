@@ -161,7 +161,12 @@ impl Writer {
         let buf = buf.into_inner();
         let bytes_written = buf.len();
 
+        let start = std::time::Instant::now();
         self.f.write_all(buf).context(WriteDataSnafu)?;
+        let wal_lock_time = start.elapsed().as_millis() as f64;
+        config::metrics::INGEST_WAL_LOCK_TIME
+            .with_label_values(&["default"])
+            .observe(wal_lock_time);
 
         self.bytes_written += bytes_written;
         self.uncompressed_bytes_written += uncompressed_len;
