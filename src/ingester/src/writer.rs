@@ -52,6 +52,27 @@ static WRITERS: Lazy<Vec<RwMap<WriterKey, Arc<Writer>>>> = Lazy::new(|| {
     writers
 });
 
+static WAL_RUNTIMES: Lazy<Vec<Option<Arc<tokio::runtime::Runtime>>>> = Lazy::new(|| {
+    let cfg = get_config();
+    if !cfg.common.wal_dedicated_runtime_enabled {
+        return vec![];
+    }
+
+    let writer_num = cfg.limit.mem_table_bucket_num + MEM_TABLE_INDIVIDUAL_STREAMS.len();
+    let mut runtimes = Vec::with_capacity(writer_num);
+
+    for idx in 0..writer_num {
+        runtimes.push(create_dedicated_runtime_for_idx(idx));
+    }
+
+    log::info!(
+        "[INGESTER:RUNTIME] Created {} dedicated runtimes for WAL writers",
+        runtimes.iter().filter(|r| r.is_some()).count()
+    );
+
+    runtimes
+});
+
 pub struct Writer {
     idx: usize,
     key: WriterKey,
@@ -236,8 +257,6 @@ impl Writer {
 
         let (tx, rx) = mpsc::channel(cfg.limit.wal_write_queue_size);
 
-        let dedicated_runtime = Self::create_dedicated_runtime(idx);
-
         let writer = Self {
             idx,
             key: key.clone(),
@@ -260,6 +279,12 @@ impl Writer {
         let writer_clone = writer.clone();
 
         log::info!("[INGESTER:MEM:{idx}] writer queue start consuming");
+        let dedicated_runtime = if idx < WAL_RUNTIMES.len() {
+            WAL_RUNTIMES[idx].clone()
+        } else {
+            None
+        };
+
         // 在独立 runtime 上 spawn 消费任务，或使用默认 runtime
         if let Some(rt) = dedicated_runtime {
             rt.spawn(async move {
@@ -270,112 +295,8 @@ impl Writer {
                 Self::consume_loop(writer, rx, idx).await;
             });
         }
-        // tokio::spawn(async move {
-        //     let mut total: usize = 0;
-        //     loop {
-        //         match rx.recv().await {
-        //             None => break,
-        //             Some((sign, entries, fsync)) => match sign {
-        //                 WriterSignal::Close => break,
-        //                 WriterSignal::Rotate => {
-        //                     if let Err(e) = writer.rotate(0, 0).await {
-        //                         log::error!("[INGESTER:MEM:{idx}] writer rotate error: {e}");
-        //                     }
-        //                 }
-        //                 WriterSignal::Produce => {
-        //                     if let Err(e) = writer.consume(entries, fsync).await {
-        //                         log::error!("[INGESTER:MEM:{idx}] writer consume batch error:
-        // {e}");                     }
-        //                 }
-        //             },
-        //         }
-        //         total += 1;
-        //         if total % 1000 == 0 {
-        //             log::info!(
-        //                 "[INGESTER:MEM:{idx}] writer queue consuming, total: {}, in queue: {}",
-        //                 total,
-        //                 rx.len()
-        //             );
-        //         }
-        //     }
-        //     log::info!("[INGESTER:MEM:{idx}] writer queue closed");
-        // });
 
         writer_clone
-    }
-
-    fn create_dedicated_runtime(idx: usize) -> Option<Arc<tokio::runtime::Runtime>> {
-        let cfg = get_config();
-
-        // 检查是否启用独立 runtime（通过配置控制）
-        if !cfg.common.wal_dedicated_runtime_enabled {
-            return None;
-        }
-
-        // 计算应该绑定的 CPU 核心
-        // 策略：将 WAL writer 绑定到后半部分的 CPU 核心
-        let total_cpus = cfg.limit.cpu_num;
-        let http_workers = cfg.limit.http_worker_num;
-
-        // HTTP workers 使用前面的核心 (0 到 http_workers-1)
-        // WAL writers 使用后面的核心 (http_workers 到 total_cpus-1)
-        let available_cpus_for_wal = if total_cpus > http_workers {
-            total_cpus - http_workers
-        } else {
-            1 // 至少保留 1 个核心
-        };
-
-        // 将 writer idx 映射到 CPU 核心
-        let cpu_id = http_workers + (idx % available_cpus_for_wal);
-
-        log::info!(
-            "[INGESTER:MEM:{idx}] Creating dedicated runtime on CPU core {cpu_id} (total CPUs: {total_cpus}, HTTP workers: {http_workers})"
-        );
-
-        // 创建单线程 runtime
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1) // 每个 writer 一个专用线程
-            .thread_name(format!("wal-writer-{idx}"))
-            .on_thread_start(move || {
-                // 在线程启动时绑定 CPU 核心
-                if let Some(core_ids) = core_affinity::get_core_ids() {
-                    if cpu_id < core_ids.len() {
-                        if core_affinity::set_for_current(core_ids[cpu_id]) {
-                            log::info!(
-                                "[INGESTER:MEM:{idx}] Successfully bound WAL writer thread to CPU core {cpu_id}"
-                            );
-                        } else {
-                            log::warn!(
-                                "[INGESTER:MEM:{idx}] Failed to bind WAL writer thread to CPU core {cpu_id}"
-                            );
-                        }
-                    } else {
-                        log::warn!(
-                            "[INGESTER:MEM:{idx}] CPU core {cpu_id} not available, total cores: {}",
-                            core_ids.len()
-                        );
-                    }
-                } else {
-                    log::warn!(
-                        "[INGESTER:MEM:{idx}] Failed to get CPU core IDs for binding"
-                    );
-                }
-            })
-            .enable_all()
-            .build();
-
-        match runtime {
-            Ok(rt) => {
-                log::info!("[INGESTER:MEM:{idx}] Created dedicated runtime successfully");
-                Some(Arc::new(rt))
-            }
-            Err(e) => {
-                log::error!(
-                    "[INGESTER:MEM:{idx}] Failed to create dedicated runtime: {e}, falling back to shared runtime"
-                );
-                None
-            }
-        }
     }
 
     async fn consume_loop(
@@ -668,6 +589,105 @@ impl Writer {
     }
 }
 
+/// 创建独立的 runtime 并绑定 CPU 核心（模块级函数）
+fn create_dedicated_runtime_for_idx(idx: usize) -> Option<Arc<tokio::runtime::Runtime>> {
+    let cfg = get_config();
+
+    // 检查是否启用独立 runtime（通过配置控制）
+    if !cfg.common.wal_dedicated_runtime_enabled {
+        return None;
+    }
+
+    let total_cpus = cfg.limit.cpu_num;
+
+    // 安全检查：至少需要 2 个 CPU 才能做隔离（1 个给 HTTP，1 个给 WAL）
+    if total_cpus < 2 {
+        log::warn!(
+            "[INGESTER:MEM:{idx}] Cannot enable dedicated runtime: need at least 2 CPUs, got {total_cpus}"
+        );
+        return None;
+    }
+
+    // 新策略：无论 HTTP workers 配置多少，都为 WAL writers 预留 CPU
+    // 预留策略：
+    // - 小系统（<= 8 核）：预留 1 个 CPU
+    // - 中等系统（9-32 核）：预留 max(1, total_cpus / 8) 个 CPU
+    // - 大系统（> 32 核）：预留 max(4, total_cpus / 8) 个 CPU
+    let reserved_cpus_for_wal = if total_cpus <= 8 {
+        1
+    } else if total_cpus <= 32 {
+        std::cmp::max(1, total_cpus / 8)
+    } else {
+        std::cmp::max(4, total_cpus / 8)
+    };
+
+    // 确保预留的 CPU 数量合理（不超过总数的一半）
+    let reserved_cpus_for_wal = std::cmp::min(reserved_cpus_for_wal, total_cpus / 2);
+
+    // WAL writers 使用最后的几个 CPU 核心
+    // 例如：8 核系统，预留 1 个 -> WAL 使用 CPU 7
+    //       32 核系统，预留 4 个 -> WAL 使用 CPU 28-31
+    let wal_cpu_start = total_cpus - reserved_cpus_for_wal;
+    let cpu_id = wal_cpu_start + (idx % reserved_cpus_for_wal);
+
+    // 双重检查：确保 cpu_id 在有效范围内
+    if cpu_id >= total_cpus {
+        log::error!(
+            "[INGESTER:MEM:{idx}] BUG: Calculated CPU ID {cpu_id} exceeds total CPUs {total_cpus}, falling back to shared runtime"
+        );
+        return None;
+    }
+
+    log::info!(
+        "[INGESTER:MEM:{idx}] Creating dedicated runtime on CPU core {cpu_id} (total CPUs: {total_cpus}, reserved for WAL: {reserved_cpus_for_wal}, HTTP can use: 0-{})",
+        wal_cpu_start - 1
+    );
+
+    // 创建单线程 runtime
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1) // 每个 writer 一个专用线程
+        .thread_name(format!("wal-writer-{idx}"))
+        .on_thread_start(move || {
+            // 在线程启动时绑定 CPU 核心
+            if let Some(core_ids) = core_affinity::get_core_ids() {
+                if cpu_id < core_ids.len() {
+                    if core_affinity::set_for_current(core_ids[cpu_id]) {
+                        log::info!(
+                                "[INGESTER:MEM:{idx}] Successfully bound WAL writer thread to CPU core {cpu_id}"
+                            );
+                    } else {
+                        log::warn!(
+                                "[INGESTER:MEM:{idx}] Failed to bind WAL writer thread to CPU core {cpu_id}"
+                            );
+                    }
+                } else {
+                    log::warn!(
+                            "[INGESTER:MEM:{idx}] CPU core {cpu_id} not available, total cores: {}",
+                            core_ids.len()
+                        );
+                }
+            } else {
+                log::warn!(
+                        "[INGESTER:MEM:{idx}] Failed to get CPU core IDs for binding"
+                    );
+            }
+        })
+        .enable_all()
+        .build();
+
+    match runtime {
+        Ok(rt) => {
+            log::info!("[INGESTER:MEM:{idx}] Created dedicated runtime successfully");
+            Some(Arc::new(rt))
+        }
+        Err(e) => {
+            log::error!(
+                "[INGESTER:MEM:{idx}] Failed to create dedicated runtime: {e}, falling back to shared runtime"
+            );
+            None
+        }
+    }
+}
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub(crate) struct WriterKey {
     pub(crate) org_id: Arc<str>,
