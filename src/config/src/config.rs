@@ -844,6 +844,12 @@ pub struct Common {
         help = "Reject write when write queue is full"
     )]
     pub wal_write_queue_full_reject: bool,
+    #[env_config(
+        name = "ZO_WAL_DEDICATED_RUNTIME_ENABLED",
+        default = false,
+        help = "Enable dedicated runtime with CPU binding for WAL writer threads"
+    )]
+    pub wal_dedicated_runtime_enabled: bool,
     #[env_config(name = "ZO_TRACING_ENABLED", default = false)]
     pub tracing_enabled: bool,
     #[env_config(name = "ZO_TRACING_SEARCH_ENABLED", default = false)]

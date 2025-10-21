@@ -234,7 +234,10 @@ impl Writer {
             wal_id
         );
 
-        let (tx, mut rx) = mpsc::channel(cfg.limit.wal_write_queue_size);
+        let (tx, rx) = mpsc::channel(cfg.limit.wal_write_queue_size);
+
+        let dedicated_runtime = Self::create_dedicated_runtime(idx);
+
         let writer = Self {
             idx,
             key: key.clone(),
@@ -257,38 +260,157 @@ impl Writer {
         let writer_clone = writer.clone();
 
         log::info!("[INGESTER:MEM:{idx}] writer queue start consuming");
-        tokio::spawn(async move {
-            let mut total: usize = 0;
-            loop {
-                match rx.recv().await {
-                    None => break,
-                    Some((sign, entries, fsync)) => match sign {
-                        WriterSignal::Close => break,
-                        WriterSignal::Rotate => {
-                            if let Err(e) = writer.rotate(0, 0).await {
-                                log::error!("[INGESTER:MEM:{idx}] writer rotate error: {e}");
-                            }
-                        }
-                        WriterSignal::Produce => {
-                            if let Err(e) = writer.consume(entries, fsync).await {
-                                log::error!("[INGESTER:MEM:{idx}] writer consume batch error: {e}");
-                            }
-                        }
-                    },
-                }
-                total += 1;
-                if total % 1000 == 0 {
-                    log::info!(
-                        "[INGESTER:MEM:{idx}] writer queue consuming, total: {}, in queue: {}",
-                        total,
-                        rx.len()
-                    );
-                }
-            }
-            log::info!("[INGESTER:MEM:{idx}] writer queue closed");
-        });
+        // 在独立 runtime 上 spawn 消费任务，或使用默认 runtime
+        if let Some(rt) = dedicated_runtime {
+            rt.spawn(async move {
+                Self::consume_loop(writer, rx, idx).await;
+            });
+        } else {
+            tokio::spawn(async move {
+                Self::consume_loop(writer, rx, idx).await;
+            });
+        }
+        // tokio::spawn(async move {
+        //     let mut total: usize = 0;
+        //     loop {
+        //         match rx.recv().await {
+        //             None => break,
+        //             Some((sign, entries, fsync)) => match sign {
+        //                 WriterSignal::Close => break,
+        //                 WriterSignal::Rotate => {
+        //                     if let Err(e) = writer.rotate(0, 0).await {
+        //                         log::error!("[INGESTER:MEM:{idx}] writer rotate error: {e}");
+        //                     }
+        //                 }
+        //                 WriterSignal::Produce => {
+        //                     if let Err(e) = writer.consume(entries, fsync).await {
+        //                         log::error!("[INGESTER:MEM:{idx}] writer consume batch error:
+        // {e}");                     }
+        //                 }
+        //             },
+        //         }
+        //         total += 1;
+        //         if total % 1000 == 0 {
+        //             log::info!(
+        //                 "[INGESTER:MEM:{idx}] writer queue consuming, total: {}, in queue: {}",
+        //                 total,
+        //                 rx.len()
+        //             );
+        //         }
+        //     }
+        //     log::info!("[INGESTER:MEM:{idx}] writer queue closed");
+        // });
 
         writer_clone
+    }
+
+    fn create_dedicated_runtime(idx: usize) -> Option<Arc<tokio::runtime::Runtime>> {
+        let cfg = get_config();
+
+        // 检查是否启用独立 runtime（通过配置控制）
+        if !cfg.common.wal_dedicated_runtime_enabled {
+            return None;
+        }
+
+        // 计算应该绑定的 CPU 核心
+        // 策略：将 WAL writer 绑定到后半部分的 CPU 核心
+        let total_cpus = cfg.limit.cpu_num;
+        let http_workers = cfg.limit.http_worker_num;
+
+        // HTTP workers 使用前面的核心 (0 到 http_workers-1)
+        // WAL writers 使用后面的核心 (http_workers 到 total_cpus-1)
+        let available_cpus_for_wal = if total_cpus > http_workers {
+            total_cpus - http_workers
+        } else {
+            1 // 至少保留 1 个核心
+        };
+
+        // 将 writer idx 映射到 CPU 核心
+        let cpu_id = http_workers + (idx % available_cpus_for_wal);
+
+        log::info!(
+            "[INGESTER:MEM:{idx}] Creating dedicated runtime on CPU core {cpu_id} (total CPUs: {total_cpus}, HTTP workers: {http_workers})"
+        );
+
+        // 创建单线程 runtime
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1) // 每个 writer 一个专用线程
+            .thread_name(format!("wal-writer-{idx}"))
+            .on_thread_start(move || {
+                // 在线程启动时绑定 CPU 核心
+                if let Some(core_ids) = core_affinity::get_core_ids() {
+                    if cpu_id < core_ids.len() {
+                        if core_affinity::set_for_current(core_ids[cpu_id]) {
+                            log::info!(
+                                "[INGESTER:MEM:{idx}] Successfully bound WAL writer thread to CPU core {cpu_id}"
+                            );
+                        } else {
+                            log::warn!(
+                                "[INGESTER:MEM:{idx}] Failed to bind WAL writer thread to CPU core {cpu_id}"
+                            );
+                        }
+                    } else {
+                        log::warn!(
+                            "[INGESTER:MEM:{idx}] CPU core {cpu_id} not available, total cores: {}",
+                            core_ids.len()
+                        );
+                    }
+                } else {
+                    log::warn!(
+                        "[INGESTER:MEM:{idx}] Failed to get CPU core IDs for binding"
+                    );
+                }
+            })
+            .enable_all()
+            .build();
+
+        match runtime {
+            Ok(rt) => {
+                log::info!("[INGESTER:MEM:{idx}] Created dedicated runtime successfully");
+                Some(Arc::new(rt))
+            }
+            Err(e) => {
+                log::error!(
+                    "[INGESTER:MEM:{idx}] Failed to create dedicated runtime: {e}, falling back to shared runtime"
+                );
+                None
+            }
+        }
+    }
+
+    async fn consume_loop(
+        writer: Arc<Writer>,
+        mut rx: mpsc::Receiver<(WriterSignal, Vec<Entry>, bool)>,
+        idx: usize,
+    ) {
+        let mut total: usize = 0;
+        loop {
+            match rx.recv().await {
+                None => break,
+                Some((sign, entries, fsync)) => match sign {
+                    WriterSignal::Close => break,
+                    WriterSignal::Rotate => {
+                        if let Err(e) = writer.rotate(0, 0).await {
+                            log::error!("[INGESTER:MEM:{idx}] writer rotate error: {e}");
+                        }
+                    }
+                    WriterSignal::Produce => {
+                        if let Err(e) = writer.consume(entries, fsync).await {
+                            log::error!("[INGESTER:MEM:{idx}] writer consume batch error: {e}");
+                        }
+                    }
+                },
+            }
+            total += 1;
+            if total % 1000 == 0 {
+                log::info!(
+                    "[INGESTER:MEM:{idx}] writer queue consuming, total: {}, in queue: {}",
+                    total,
+                    rx.len()
+                );
+            }
+        }
+        log::info!("[INGESTER:MEM:{idx}] writer queue closed");
     }
 
     pub fn get_key_str(&self) -> String {
