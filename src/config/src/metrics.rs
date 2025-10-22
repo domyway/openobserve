@@ -121,6 +121,33 @@ pub static INGEST_RECORDS: Lazy<IntCounterVec> = Lazy::new(|| {
     )
     .expect("Metric created")
 });
+
+pub static WAL_CONSUME_INGEST_RECORDS: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "wal_consume_ingest_records",
+            "Wal Consume Ingested records.".to_owned() + HELP_SUFFIX,
+        )
+            .namespace(NAMESPACE)
+            .const_labels(create_const_labels()),
+        &["organization", "stream_type"],
+    )
+        .expect("Metric created")
+});
+
+pub static WAL_CONSUME_INGEST_COUNT: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "wal_consume_ingest_count",
+            "Wal Consume Ingested counts.".to_owned() + HELP_SUFFIX,
+        )
+            .namespace(NAMESPACE)
+            .const_labels(create_const_labels()),
+        &["organization", "stream_type"],
+    )
+        .expect("Metric created")
+});
+
 pub static INGEST_BYTES: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new("ingest_bytes", "Ingested bytes.".to_owned() + HELP_SUFFIX)
@@ -1083,6 +1110,12 @@ fn register_metrics(registry: &Registry) {
     // ingester stats
     registry
         .register(Box::new(INGEST_RECORDS.clone()))
+        .expect("Metric registered");
+    registry
+        .register(Box::new(WAL_CONSUME_INGEST_RECORDS.clone()))
+        .expect("Metric registered");
+    registry
+        .register(Box::new(WAL_CONSUME_INGEST_COUNT.clone()))
         .expect("Metric registered");
     registry
         .register(Box::new(INGEST_BYTES.clone()))

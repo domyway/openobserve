@@ -316,9 +316,22 @@ impl Writer {
                         }
                     }
                     WriterSignal::Produce => {
-                        if let Err(e) = writer.consume(entries, fsync).await {
-                            log::error!("[INGESTER:MEM:{idx}] writer consume batch error: {e}");
-                        }
+                        let (entries_records, _) = entries
+                            .iter()
+                            .map(|entry| (entry.data.len(), entry.data_size))
+                            .fold((0, 0), |(acc_records, acc_size), (records, size)| {
+                                (acc_records + records, acc_size + size)
+                            });
+
+                        metrics::WAL_CONSUME_INGEST_RECORDS
+                            .with_label_values(&["default", "traces"])
+                            .inc_by(entries_records as u64);
+                        metrics::WAL_CONSUME_INGEST_COUNT
+                            .with_label_values(&["default", "traces"])
+                            .inc_by(1);
+                        // if let Err(e) = writer.consume(entries, fsync).await {
+                        //     log::error!("[INGESTER:MEM:{idx}] writer consume batch error: {e}");
+                        // }
                     }
                 },
             }
