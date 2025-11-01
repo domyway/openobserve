@@ -128,11 +128,11 @@ pub static WAL_CONSUME_INGEST_RECORDS: Lazy<IntCounterVec> = Lazy::new(|| {
             "wal_consume_ingest_records",
             "Wal Consume Ingested records.".to_owned() + HELP_SUFFIX,
         )
-            .namespace(NAMESPACE)
-            .const_labels(create_const_labels()),
+        .namespace(NAMESPACE)
+        .const_labels(create_const_labels()),
         &["organization", "stream_type"],
     )
-        .expect("Metric created")
+    .expect("Metric created")
 });
 
 pub static WAL_CONSUME_INGEST_COUNT: Lazy<IntCounterVec> = Lazy::new(|| {
@@ -141,11 +141,11 @@ pub static WAL_CONSUME_INGEST_COUNT: Lazy<IntCounterVec> = Lazy::new(|| {
             "wal_consume_ingest_count",
             "Wal Consume Ingested counts.".to_owned() + HELP_SUFFIX,
         )
-            .namespace(NAMESPACE)
-            .const_labels(create_const_labels()),
+        .namespace(NAMESPACE)
+        .const_labels(create_const_labels()),
         &["organization", "stream_type"],
     )
-        .expect("Metric created")
+    .expect("Metric created")
 });
 
 pub static INGEST_BYTES: Lazy<IntCounterVec> = Lazy::new(|| {

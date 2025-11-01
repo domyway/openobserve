@@ -116,6 +116,117 @@ impl Entry {
             arrow_size,
         ))
     }
+
+    /// Batch convert multiple entries into RecordBatchEntry objects
+    ///
+    /// This is more efficient than calling into_batch() individually because:
+    /// 1. Groups entries by schema to minimize schema validation overhead
+    /// 2. Converts all data with same schema in one call
+    /// 3. Better memory locality and cache utilization
+    ///
+    /// # Arguments
+    /// * `entries` - Slice of entries to convert
+    /// * `stream_type` - The stream type (e.g., "traces", "logs")
+    ///
+    /// # Returns
+    /// Vector of RecordBatchEntry in the same order as input entries
+    pub fn into_batch_bulk(
+        entries: &[Entry],
+        stream_type: Arc<str>,
+    ) -> Result<Vec<Arc<RecordBatchEntry>>> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Group entries by schema to batch convert entries with same schema
+        let mut schema_groups: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+
+        for (idx, entry) in entries.iter().enumerate() {
+            let schema_key = entry.schema_key.to_string();
+            schema_groups.entry(schema_key).or_default().push(idx);
+        }
+
+        // Prepare result vector with placeholders
+        let mut results: Vec<Option<Arc<RecordBatchEntry>>> = vec![None; entries.len()];
+
+        // Process each schema group
+        for (_schema_key, indices) in schema_groups {
+            if indices.is_empty() {
+                continue;
+            }
+
+            // Get schema from first entry in group (all entries in group have same schema)
+            let first_idx = indices[0];
+            let schema = entries[first_idx].schema.clone().ok_or_else(|| {
+                crate::errors::Error::ArrowJsonEncodeError {
+                    source: arrow_schema::ArrowError::SchemaError(
+                        "Entry missing schema".to_string(),
+                    ),
+                }
+            })?;
+
+            // Collect all JSON data from entries in this group
+            let mut all_data: Vec<Arc<serde_json::Value>> = Vec::new();
+            let mut entry_data_counts: Vec<usize> = Vec::new();
+
+            for &idx in &indices {
+                let entry = &entries[idx];
+                entry_data_counts.push(entry.data.len());
+                all_data.extend(entry.data.iter().cloned());
+            }
+
+            // Batch convert all data at once
+            let combined_batch =
+                convert_json_to_record_batch(&schema, &all_data).context(ArrowJsonEncodeSnafu)?;
+
+            let arrow_size = combined_batch.size();
+
+            // Split the combined batch back into individual entry batches
+            let mut row_offset = 0;
+            for (&idx, &count) in indices.iter().zip(entry_data_counts.iter()) {
+                if count == 0 {
+                    // Handle empty entry
+                    let empty_batch = RecordBatch::new_empty(schema.clone());
+                    results[idx] = Some(RecordBatchEntry::new(
+                        stream_type.clone(),
+                        empty_batch,
+                        0,
+                        0,
+                    ));
+                    continue;
+                }
+
+                // Slice the combined batch for this entry
+                let entry_batch = combined_batch.slice(row_offset, count);
+                row_offset += count;
+
+                // Calculate proportional sizes
+                let entry_json_size = entries[idx].data_size;
+                let entry_arrow_size = (arrow_size * count) / all_data.len().max(1);
+
+                results[idx] = Some(RecordBatchEntry::new(
+                    stream_type.clone(),
+                    entry_batch,
+                    entry_json_size,
+                    entry_arrow_size,
+                ));
+            }
+        }
+
+        // Convert to final result, handling any missing entries as errors
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(idx, opt)| {
+                opt.ok_or_else(|| crate::errors::Error::ArrowJsonEncodeError {
+                    source: arrow_schema::ArrowError::SchemaError(format!(
+                        "Failed to convert entry at index {idx}",
+                    )),
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for Entry {

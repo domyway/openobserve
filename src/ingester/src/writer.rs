@@ -20,7 +20,7 @@ use std::{
         atomic::{AtomicI64, AtomicU64, Ordering},
     },
 };
-
+use std::time::Instant;
 use arrow_schema::Schema;
 use chrono::{Duration, Utc};
 use config::{
@@ -80,7 +80,7 @@ pub struct Writer {
     memtable: Arc<RwLock<MemTable>>,
     next_seq: AtomicU64,
     created_at: AtomicI64,
-    write_queue: Arc<mpsc::Sender<(WriterSignal, Vec<Entry>, bool)>>,
+    write_queue: Arc<mpsc::Sender<(WriterSignal, crate::ProcessedBatch, bool)>>,
 }
 
 // check total memtable size
@@ -213,7 +213,7 @@ pub async fn check_ttl() -> Result<()> {
         for r in w.values() {
             if let Err(e) = r
                 .write_queue
-                .send((WriterSignal::Rotate, vec![], false))
+                .send((WriterSignal::Rotate, crate::ProcessedBatch::empty(), false))
                 .await
             {
                 log::error!("[INGESTER:MEM:{}] writer queue rotate error: {e}", r.idx);
@@ -301,14 +301,14 @@ impl Writer {
 
     async fn consume_loop(
         writer: Arc<Writer>,
-        mut rx: mpsc::Receiver<(WriterSignal, Vec<Entry>, bool)>,
+        mut rx: mpsc::Receiver<(WriterSignal, crate::ProcessedBatch, bool)>,
         idx: usize,
     ) {
         let mut total: usize = 0;
         loop {
             match rx.recv().await {
                 None => break,
-                Some((sign, entries, fsync)) => match sign {
+                Some((sign, batch, fsync)) => match sign {
                     WriterSignal::Close => break,
                     WriterSignal::Rotate => {
                         if let Err(e) = writer.rotate(0, 0).await {
@@ -316,7 +316,8 @@ impl Writer {
                         }
                     }
                     WriterSignal::Produce => {
-                        let (entries_records, _) = entries
+                        let (entries_records, _) = batch
+                            .entries
                             .iter()
                             .map(|entry| (entry.data.len(), entry.data_size))
                             .fold((0, 0), |(acc_records, acc_size), (records, size)| {
@@ -329,9 +330,9 @@ impl Writer {
                         metrics::WAL_CONSUME_INGEST_COUNT
                             .with_label_values(&["default", "traces"])
                             .inc_by(1);
-                        // if let Err(e) = writer.consume(entries, fsync).await {
-                        //     log::error!("[INGESTER:MEM:{idx}] writer consume batch error: {e}");
-                        // }
+                        if let Err(e) = writer.consume_processed(batch, fsync).await {
+                            log::error!("[INGESTER:MEM:{idx}] writer consume batch error: {e}");
+                        }
                     }
                 },
             }
@@ -365,19 +366,25 @@ impl Writer {
         self.write_batch(vec![entry], fsync).await
     }
 
-    pub async fn write_batch(&self, entries: Vec<Entry>, fsync: bool) -> Result<()> {
+    pub async fn write_batch(&self, mut entries: Vec<Entry>, fsync: bool) -> Result<()> {
         if entries.is_empty() {
             return Ok(());
         }
+
+        // Pre-process data BEFORE sending to queue
+        // This moves CPU-intensive work (JSON to Arrow conversion) out of the consume loop,
+        // allowing consume to focus purely on IO operations
+        let processed_batch = self.preprocess_batch(&mut entries)?;
+
         let cfg = get_config();
         if !cfg.common.wal_write_queue_enabled {
-            return self.consume(entries, fsync).await;
+            return self.consume_processed(processed_batch, fsync).await;
         }
 
         if cfg.common.wal_write_queue_full_reject {
-            if let Err(e) = self
-                .write_queue
-                .try_send((WriterSignal::Produce, entries, fsync))
+            if let Err(e) =
+                self.write_queue
+                    .try_send((WriterSignal::Produce, processed_batch, fsync))
             {
                 log::error!(
                     "[INGESTER:MEM:{}] write queue full, reject write: {}",
@@ -390,7 +397,7 @@ impl Writer {
             }
         } else {
             self.write_queue
-                .send((WriterSignal::Produce, entries, fsync))
+                .send((WriterSignal::Produce, processed_batch, fsync))
                 .await
                 .context(TokioMpscSendEntriesSnafu)?;
         }
@@ -398,21 +405,29 @@ impl Writer {
         Ok(())
     }
 
-    async fn consume(&self, mut entries: Vec<Entry>, fsync: bool) -> Result<()> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-
+    /// Pre-process entries into a ProcessedBatch
+    ///
+    /// This method performs all CPU-intensive work:
+    /// - Serializing entries to bytes for WAL
+    /// - Converting JSON to Arrow RecordBatch
+    /// - Calculating sizes for rotation checks
+    ///
+    /// By doing this before sending to the queue, we:
+    /// 1. Enable parallel processing across multiple HTTP workers
+    /// 2. Keep the consume loop focused on IO
+    /// 3. Reduce consume latency and lock hold times
+    fn preprocess_batch(&self, entries: &mut [Entry]) -> Result<crate::ProcessedBatch> {
+        let _start_preprocess_batch = Instant::now();
+        // Serialize entries to bytes for WAL writing
         let bytes_entries = entries
             .iter_mut()
             .map(|entry| entry.into_bytes())
             .collect::<Result<Vec<_>>>()?;
-        let batch_entries = entries
-            .iter()
-            .map(|entry| {
-                entry.into_batch(self.key.stream_type.clone(), entry.schema.clone().unwrap())
-            })
-            .collect::<Result<Vec<_>>>()?;
+
+        // Bulk convert to Arrow RecordBatch
+        let batch_entries = Entry::into_batch_bulk(entries, self.key.stream_type.clone())?;
+
+        // Calculate total sizes for rotation check
         let (entries_json_size, entries_arrow_size) = batch_entries
             .iter()
             .map(|entry| (entry.data_json_size, entry.data_arrow_size))
@@ -423,17 +438,60 @@ impl Writer {
                 },
             );
 
-        // check rotation
-        self.rotate(entries_json_size, entries_arrow_size).await?;
+        // Move entries into ProcessedBatch
+        // Safety: entries are no longer needed after this point
+        let entries_vec = entries.to_vec();
+        let _start_preprocess_batch_duration = _start_preprocess_batch.elapsed();
+        if _start_preprocess_batch_duration.as_millis() > 100 {
+            log::warn!("_start_preprocess_batch: {_start_preprocess_batch_duration:?}");
+        }
+        Ok(crate::ProcessedBatch {
+            entries: entries_vec,
+            bytes_entries,
+            batch_entries,
+            entries_json_size,
+            entries_arrow_size,
+        })
+    }
 
-        // write into wal
+    /// Legacy consume method for non-queue mode
+    /// When queue is disabled, we still need to process entries inline
+    async fn consume(&self, mut entries: Vec<Entry>, fsync: bool) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // For non-queue mode, preprocess inline
+        let processed_batch = self.preprocess_batch(&mut entries)?;
+        self.consume_processed(processed_batch, fsync).await
+    }
+
+    /// Optimized consume method that only performs IO operations
+    ///
+    /// This method expects all CPU-intensive work (JSON to Arrow conversion,
+    /// serialization) to have been done before queueing. This allows:
+    ///
+    /// 1. **Parallel Processing**: CPU work done in multiple HTTP workers
+    /// 2. **Faster IO**: No CPU blocking, just pure IO operations
+    /// 3. **Lower Latency**: Shorter lock hold times for WAL and Memtable
+    /// 4. **Better Scheduling**: Dedicated runtime can focus on IO
+    async fn consume_processed(&self, batch: crate::ProcessedBatch, fsync: bool) -> Result<()> {
+        if batch.entries.is_empty() {
+            return Ok(());
+        }
+        let _start_consume_processed = Instant::now();
+        // Check rotation
+        self.rotate(batch.entries_json_size, batch.entries_arrow_size)
+            .await?;
+
+        // Write into WAL - pure IO, no CPU-intensive processing
         let start = std::time::Instant::now();
         let mut wal = self.wal.write().await;
         let wal_lock_time = start.elapsed().as_millis() as f64;
         metrics::INGEST_WAL_LOCK_TIME
             .with_label_values(&[&self.key.org_id])
             .observe(wal_lock_time);
-        for entry in bytes_entries {
+        for entry in batch.bytes_entries {
             if entry.is_empty() {
                 continue;
             }
@@ -442,27 +500,32 @@ impl Writer {
         }
         drop(wal);
 
-        // write into memtable
+        // Write into Memtable - pure IO, no CPU-intensive processing
         let start = std::time::Instant::now();
         let mut mem = self.memtable.write().await;
         let mem_lock_time = start.elapsed().as_millis() as f64;
         metrics::INGEST_MEMTABLE_LOCK_TIME
             .with_label_values(&[&self.key.org_id])
             .observe(mem_lock_time);
-        for (entry, batch) in entries.into_iter().zip(batch_entries) {
+        for (entry, batch_entry) in batch.entries.into_iter().zip(batch.batch_entries) {
             if entry.data_size == 0 {
                 continue;
             }
-            mem.write(entry.schema.clone().unwrap(), entry, batch)?;
+            mem.write(entry.schema.clone().unwrap(), entry, batch_entry)?;
             tokio::task::coop::consume_budget().await;
         }
         drop(mem);
 
-        // check fsync
+        // Check fsync
         if fsync {
             let mut wal = self.wal.write().await;
             wal.sync().context(WalSnafu)?;
             drop(wal);
+        }
+
+        let _start_consume_processed_duration = _start_consume_processed.elapsed();
+        if _start_consume_processed_duration.as_millis() > 100 {
+            log::warn!("_start_consume_processed_duration: {_start_consume_processed_duration:?}");
         }
 
         Ok(())
@@ -543,7 +606,7 @@ impl Writer {
         // wait for all messages to be processed
         if let Err(e) = self
             .write_queue
-            .send((WriterSignal::Close, vec![], true))
+            .send((WriterSignal::Close, crate::ProcessedBatch::empty(), true))
             .await
         {
             log::error!("[INGESTER:MEM:{}] close writer error: {}", self.idx, e);

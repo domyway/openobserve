@@ -40,6 +40,8 @@ getrandom.workspace = true
 gxhash = { version = "~3.4.1", optional = true }
 hashbrown.workspace = true
 hex.workspace = true
+itoa.workspace = true
+ryu.workspace = true
 indexmap.workspace = true
 itertools.workspace = true
 lettre.workspace = true

@@ -282,6 +282,8 @@ hashlink = "0.10"
 hashbrown = { version = "0.15", features = ["serde"] }
 hex = "0.4"
 indexmap = { version = "2.7", features = ["serde"] }
+itoa = "1.0"
+ryu = "1.0"
 ipnetwork = "0.20"
 itertools = "0.13"
 lettre = { version = "0.11", default-features = false, features = [
