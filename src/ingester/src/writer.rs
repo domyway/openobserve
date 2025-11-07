@@ -496,6 +496,7 @@ impl Writer {
         metrics::INGEST_WAL_LOCK_TIME
             .with_label_values(&[&self.key.org_id])
             .observe(wal_lock_time);
+        let _start_wal_processed = Instant::now();
         for entry in batch.bytes_entries {
             if entry.is_empty() {
                 continue;
@@ -504,6 +505,10 @@ impl Writer {
             tokio::task::coop::consume_budget().await;
         }
         drop(wal);
+        let _start_wal_processed_duration = _start_wal_processed.elapsed();
+        if _start_wal_processed_duration.as_millis() > 50 {
+            log::warn!("_start_wal_processed_duration: {_start_wal_processed_duration:?}");
+        }
 
         // Write into Memtable - pure IO, no CPU-intensive processing
         let start = std::time::Instant::now();
@@ -512,6 +517,7 @@ impl Writer {
         metrics::INGEST_MEMTABLE_LOCK_TIME
             .with_label_values(&[&self.key.org_id])
             .observe(mem_lock_time);
+        let _start_mem_processed = Instant::now();
         for (entry, batch_entry) in batch.entries.into_iter().zip(batch.batch_entries) {
             if entry.data_size == 0 {
                 continue;
@@ -520,6 +526,11 @@ impl Writer {
             tokio::task::coop::consume_budget().await;
         }
         drop(mem);
+        let _start_mem_processed_duration = _start_mem_processed.elapsed();
+        if _start_mem_processed_duration.as_millis() > 50 {
+            log::warn!("_start_mem_processed_duration: {_start_mem_processed_duration:?}");
+        }
+
 
         // Check fsync
         if fsync {

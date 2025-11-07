@@ -21,7 +21,7 @@ use std::{
 use arrow::{array::Int64Array, record_batch::RecordBatch};
 use arrow_schema::Schema;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use config::utils::record_batch_ext::{RecordBatchExt, convert_json_to_record_batch};
+use config::utils::record_batch_ext::{RecordBatchExt, convert_json_to_record_batch, convert_json_to_record_batch_optimized};
 use serde::{Deserialize, Serialize};
 use snafu::ResultExt;
 
@@ -106,7 +106,7 @@ impl Entry {
         schema: Arc<Schema>,
     ) -> Result<Arc<RecordBatchEntry>> {
         let batch =
-            convert_json_to_record_batch(&schema, &self.data).context(ArrowJsonEncodeSnafu)?;
+            convert_json_to_record_batch_optimized(&schema, &self.data).context(ArrowJsonEncodeSnafu)?;
 
         let arrow_size = batch.size();
         Ok(RecordBatchEntry::new(
