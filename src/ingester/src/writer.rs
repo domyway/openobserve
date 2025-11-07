@@ -425,7 +425,12 @@ impl Writer {
             .collect::<Result<Vec<_>>>()?;
 
         // Bulk convert to Arrow RecordBatch
-        let batch_entries = Entry::into_batch_bulk(entries, self.key.stream_type.clone())?;
+        let batch_entries = entries
+            .iter()
+            .map(|entry| {
+                entry.into_batch(self.key.stream_type.clone(), entry.schema.clone().unwrap())
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         // Calculate total sizes for rotation check
         let (entries_json_size, entries_arrow_size) = batch_entries
