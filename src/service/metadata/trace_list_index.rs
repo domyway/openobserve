@@ -56,8 +56,6 @@ pub struct TraceListItem {
     pub stream_name: String,
     pub service_name: String,
     pub trace_id: String,
-    pub span_id: String,
-    pub operation_name: String,
 }
 
 impl Metadata for TraceListIndex {
@@ -67,8 +65,6 @@ impl Metadata for TraceListIndex {
             Field::new("stream_name", DataType::Utf8, false),
             Field::new("service_name", DataType::Utf8, false),
             Field::new("trace_id", DataType::Utf8, false),
-            Field::new("span_id", DataType::Utf8, false),
-            Field::new("operation_name", DataType::Utf8, false),
         ]))
     }
 
